@@ -130,6 +130,12 @@ fn terminal_key_bytes(keystroke: &Keystroke) -> Option<Vec<u8>> {
             "down" => Some(b"\x1b[B".to_vec()),
             "right" => Some(b"\x1b[C".to_vec()),
             "left" => Some(b"\x1b[D".to_vec()),
+            "home" => Some(b"\x1b[H".to_vec()),
+            "end" => Some(b"\x1b[F".to_vec()),
+            "insert" => Some(b"\x1b[2~".to_vec()),
+            "delete" => Some(b"\x1b[3~".to_vec()),
+            "pageup" => Some(b"\x1b[5~".to_vec()),
+            "pagedown" => Some(b"\x1b[6~".to_vec()),
             _ => printable_key_char(keystroke).map(|text| text.as_bytes().to_vec()),
         };
     }
