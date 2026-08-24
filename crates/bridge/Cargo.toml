@@ -1,0 +1,8 @@
+[package]
+name = "bifur-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bifur-core = { path = "../core" }
+flutter_rust_bridge = { workspace = true }
