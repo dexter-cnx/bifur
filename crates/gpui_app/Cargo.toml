@@ -1,0 +1,9 @@
+[package]
+name = "bifur"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bifur-core = { path = "../core" }
+gpui = { workspace = true }
+dirs = { workspace = true }

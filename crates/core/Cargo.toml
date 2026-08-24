@@ -1,0 +1,15 @@
+[package]
+name = "bifur-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+walkdir = { workspace = true }
+rayon = { workspace = true }
+mime_guess = { workspace = true }
+serde = { workspace = true }
+regex = { workspace = true }
+dirs = { workspace = true }
+notify = { workspace = true }
+portable-pty = { workspace = true }

@@ -1,0 +1,227 @@
+use std::fmt::Write as _;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cell {
+    pub ch: char,
+    pub fg: u32,
+    pub bg: u32,
+    pub bold: bool,
+}
+
+impl Default for Cell {
+    fn default() -> Self {
+        Self {
+            ch: ' ',
+            fg: 0xE0E0E0,
+            bg: 0x121212,
+            bold: false,
+        }
+    }
+}
+
+/// UI-neutral terminal surface.
+///
+/// This deliberately lives in `bifur-core`: GPUI and Flutter only consume a
+/// snapshot and never read PTY bytes directly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenBuffer {
+    pub cols: usize,
+    pub rows: usize,
+    pub cells: Vec<Cell>,
+    cursor_col: usize,
+    cursor_row: usize,
+    ansi_state: AnsiState,
+    utf8_pending: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum AnsiState {
+    #[default]
+    Ground,
+    Escape,
+    Csi,
+}
+
+impl ScreenBuffer {
+    pub fn new(cols: usize, rows: usize) -> Self {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        Self {
+            cols,
+            rows,
+            cells: vec![Cell::default(); cols * rows],
+            cursor_col: 0,
+            cursor_row: 0,
+            ansi_state: AnsiState::Ground,
+            utf8_pending: Vec::new(),
+        }
+    }
+
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        let mut replacement = Self::new(cols, rows);
+        let copy_rows = self.rows.min(replacement.rows);
+        let copy_cols = self.cols.min(replacement.cols);
+        for row in 0..copy_rows {
+            for col in 0..copy_cols {
+                replacement.cells[row * replacement.cols + col] =
+                    self.cells[row * self.cols + col].clone();
+            }
+        }
+        replacement.cursor_col = self.cursor_col.min(replacement.cols - 1);
+        replacement.cursor_row = self.cursor_row.min(replacement.rows - 1);
+        replacement.ansi_state = self.ansi_state;
+        replacement.utf8_pending = std::mem::take(&mut self.utf8_pending);
+        *self = replacement;
+    }
+
+    /// Initial parser: handles normal text/control characters and discards CSI
+    /// control sequences so UI never sees raw escape bytes. A complete VT parser
+    /// can replace this without changing the public ScreenBuffer contract.
+    ///
+    /// PTY reads may split a multibyte UTF-8 code point. `utf8_pending` retains
+    /// an incomplete trailing sequence until the next read instead of replacing
+    /// valid Unicode with U+FFFD.
+    pub fn push_bytes(&mut self, bytes: &[u8]) {
+        let mut data = std::mem::take(&mut self.utf8_pending);
+        data.extend_from_slice(bytes);
+
+        let mut offset = 0;
+        while offset < data.len() {
+            match std::str::from_utf8(&data[offset..]) {
+                Ok(text) => {
+                    for ch in text.chars() {
+                        self.push_char(ch);
+                    }
+                    break;
+                }
+                Err(error) => {
+                    let valid_end = offset + error.valid_up_to();
+                    if valid_end > offset {
+                        // SAFETY: `valid_up_to` guarantees this prefix is UTF-8.
+                        let valid =
+                            unsafe { std::str::from_utf8_unchecked(&data[offset..valid_end]) };
+                        for ch in valid.chars() {
+                            self.push_char(ch);
+                        }
+                    }
+                    offset = valid_end;
+
+                    match error.error_len() {
+                        Some(invalid_len) => {
+                            self.push_char('\u{FFFD}');
+                            offset += invalid_len;
+                        }
+                        None => {
+                            self.utf8_pending.extend_from_slice(&data[offset..]);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        (0..self.rows)
+            .map(|row| {
+                let mut line = String::with_capacity(self.cols);
+                for col in 0..self.cols {
+                    let _ = line.write_char(self.cells[row * self.cols + col].ch);
+                }
+                line.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    pub fn text(&self) -> String {
+        self.lines().join("\n")
+    }
+
+    fn push_char(&mut self, ch: char) {
+        match self.ansi_state {
+            AnsiState::Ground => match ch {
+                '\u{1b}' => self.ansi_state = AnsiState::Escape,
+                '\r' => self.cursor_col = 0,
+                '\n' => self.newline(),
+                '\u{8}' => self.cursor_col = self.cursor_col.saturating_sub(1),
+                '\t' => {
+                    let spaces = 4 - (self.cursor_col % 4);
+                    for _ in 0..spaces {
+                        self.put_char(' ');
+                    }
+                }
+                c if !c.is_control() => self.put_char(c),
+                _ => {}
+            },
+            AnsiState::Escape => {
+                self.ansi_state = if ch == '[' {
+                    AnsiState::Csi
+                } else {
+                    AnsiState::Ground
+                };
+            }
+            AnsiState::Csi => {
+                if ('@'..='~').contains(&ch) {
+                    self.ansi_state = AnsiState::Ground;
+                }
+            }
+        }
+    }
+
+    fn put_char(&mut self, ch: char) {
+        if self.cursor_col >= self.cols {
+            self.newline();
+        }
+        let index = self.cursor_row * self.cols + self.cursor_col;
+        self.cells[index].ch = ch;
+        self.cursor_col += 1;
+    }
+
+    fn newline(&mut self) {
+        self.cursor_col = 0;
+        if self.cursor_row + 1 < self.rows {
+            self.cursor_row += 1;
+        } else {
+            self.scroll_up();
+        }
+    }
+
+    fn scroll_up(&mut self) {
+        for row in 1..self.rows {
+            for col in 0..self.cols {
+                self.cells[(row - 1) * self.cols + col] = self.cells[row * self.cols + col].clone();
+            }
+        }
+        let start = (self.rows - 1) * self.cols;
+        self.cells[start..start + self.cols].fill(Cell::default());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScreenBuffer;
+
+    #[test]
+    fn writes_and_scrolls_text() {
+        let mut screen = ScreenBuffer::new(4, 2);
+        screen.push_bytes(b"one\ntwo\nthr");
+        assert_eq!(screen.lines(), vec!["two", "thr"]);
+    }
+
+    #[test]
+    fn removes_basic_ansi_sequence_from_visible_text() {
+        let mut screen = ScreenBuffer::new(20, 2);
+        screen.push_bytes(b"a\x1b[31mred\x1b[0mz");
+        assert_eq!(screen.lines()[0], "aredz");
+    }
+
+    #[test]
+    fn preserves_utf8_split_across_pty_reads() {
+        let mut screen = ScreenBuffer::new(20, 2);
+        let thai = "ก".as_bytes();
+        screen.push_bytes(&thai[..1]);
+        assert_eq!(screen.lines()[0], "");
+        screen.push_bytes(&thai[1..]);
+        assert_eq!(screen.lines()[0], "ก");
+    }
+}
