@@ -72,10 +72,10 @@ fn is_altgr_printable(keystroke: &Keystroke) -> bool {
 }
 
 fn control_key_identity(keystroke: &Keystroke) -> &str {
-    if let Some(produced) = printable_key_char(keystroke)
-        && matches!(produced, "@" | "[" | "\\" | "]" | "^" | "_" | "?")
-    {
-        return produced;
+    if let Some(produced) = printable_key_char(keystroke) {
+        if matches!(produced, "@" | "[" | "\\" | "]" | "^" | "_" | "?") {
+            return produced;
+        }
     }
 
     keystroke.key.as_str()
