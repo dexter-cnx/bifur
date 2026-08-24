@@ -13,6 +13,7 @@ struct BifurApp {
     preview_content: String,
     terminal: Option<TerminalSession>,
     terminal_status: Option<String>,
+    terminal_focused: bool,
     focus_handle: FocusHandle,
     left_scroll: ScrollHandle,
     right_scroll: ScrollHandle,
@@ -37,6 +38,7 @@ impl BifurApp {
             })
             .ok(),
             terminal_status: None,
+            terminal_focused: false,
             focus_handle: cx.focus_handle(),
             left_scroll: ScrollHandle::new(),
             right_scroll: ScrollHandle::new(),
@@ -88,12 +90,67 @@ impl BifurApp {
         self.reveal_selection();
     }
 
+    fn toggle_terminal_focus(&mut self) {
+        self.terminal_focused = !self.terminal_focused;
+        self.terminal_status = None;
+    }
+
+    fn send_terminal_key(&mut self, event: &KeyDownEvent) -> bool {
+        if event.keystroke.modifiers.modified() {
+            return false;
+        }
+
+        let key = event.keystroke.key.as_str();
+        let bytes: Option<Vec<u8>> = match key {
+            "enter" => Some(b"\r".to_vec()),
+            "backspace" => Some(vec![0x7f]),
+            "tab" => Some(b"\t".to_vec()),
+            "escape" => Some(vec![0x1b]),
+            "up" => Some(b"\x1b[A".to_vec()),
+            "down" => Some(b"\x1b[B".to_vec()),
+            "right" => Some(b"\x1b[C".to_vec()),
+            "left" => Some(b"\x1b[D".to_vec()),
+            "space" => Some(b" ".to_vec()),
+            _ if key.chars().count() == 1 => Some(key.as_bytes().to_vec()),
+            _ => None,
+        };
+
+        let Some(bytes) = bytes else {
+            return false;
+        };
+        let Some(terminal) = &mut self.terminal else {
+            self.terminal_status = Some("Terminal unavailable".to_string());
+            return true;
+        };
+
+        self.terminal_status = terminal
+            .send_input(&bytes)
+            .err()
+            .map(|error| format!("Terminal input failed: {error}"));
+        true
+    }
+
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.keystroke.key == "f6" && !event.keystroke.modifiers.modified() {
+            self.toggle_terminal_focus();
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+
+        if self.terminal_focused {
+            if self.send_terminal_key(event) {
+                cx.stop_propagation();
+                cx.notify();
+            }
+            return;
+        }
+
         if event.keystroke.modifiers.modified() {
             return;
         }
@@ -247,7 +304,11 @@ impl Render for BifurApp {
                             .ml_auto()
                             .text_sm()
                             .text_color(rgb(0x888888))
-                            .child("Tab pane | ↑↓/j/k select | Enter open | Backspace up"),
+                            .child(if self.terminal_focused {
+                                "Terminal input active | F6 pane mode"
+                            } else {
+                                "F6 terminal | Tab pane | ↑↓/j/k select | Enter open | Backspace up"
+                            }),
                     ),
             )
             .when_some(self.terminal_status.clone(), |root, status| {
@@ -290,8 +351,16 @@ impl Render for BifurApp {
                             .child(div().text_sm().text_color(rgb(0x888888)).child("PREVIEW"))
                             .child(div().mt_2().text_xs().child(self.preview_content.clone()))
                             .child(
-                                div().mt_4().p_2().bg(rgb(0x222222)).rounded_md().child(
-                                    match &self.terminal {
+                                div()
+                                    .mt_4()
+                                    .p_2()
+                                    .bg(if self.terminal_focused {
+                                        rgb(0x1b2733)
+                                    } else {
+                                        rgb(0x222222)
+                                    })
+                                    .rounded_md()
+                                    .child(match &self.terminal {
                                         Some(session) => TerminalView::render(
                                             &session.screen_snapshot(),
                                             &self.active_pane().current_path.display().to_string(),
@@ -300,8 +369,7 @@ impl Render for BifurApp {
                                             .text_xs()
                                             .text_color(rgb(0x888888))
                                             .child("Terminal unavailable"),
-                                    },
-                                ),
+                                    }),
                             ),
                     ),
             )
