@@ -254,7 +254,7 @@ impl BifurApp {
             .child(
                 div()
                     .flex_1()
-                    .overflow_y_scroll()
+                    .overflow_scroll()
                     .track_scroll(scroll)
                     .children(pane.entries.iter().enumerate().map(|(index, entry)| {
                         let is_selected = index == selected;
