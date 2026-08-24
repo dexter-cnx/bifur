@@ -6,7 +6,7 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
     sync::{
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, SyncSender},
         Arc, RwLock,
     },
     thread::{self, JoinHandle},
@@ -74,7 +74,7 @@ impl TerminalSession {
             .spawn_command(command)
             .context("spawn terminal shell")?;
         let writer = pty_pair.master.take_writer().context("take PTY writer")?;
-        let mut reader = pty_pair
+        let reader = pty_pair
             .master
             .try_clone_reader()
             .context("clone PTY reader")?;
@@ -84,7 +84,11 @@ impl TerminalSession {
             config.rows as usize,
         )));
         let reader_screen = Arc::clone(&screen);
-        let (event_tx, event_rx) = mpsc::channel();
+        // Repaint signals are level-triggered rather than a log of every PTY read.
+        // Keeping one pending event prevents high-volume terminal output from
+        // growing an unbounded queue while still telling the frontend that fresh
+        // screen state is available.
+        let (event_tx, event_rx) = mpsc::sync_channel(1);
         let reader_thread = spawn_reader_thread(reader, reader_screen, event_tx)
             .context("spawn terminal reader thread")?;
 
@@ -178,7 +182,7 @@ impl Drop for TerminalSession {
 fn spawn_reader_thread(
     mut reader: Box<dyn Read + Send>,
     screen: Arc<RwLock<ScreenBuffer>>,
-    event_tx: Sender<TerminalEvent>,
+    event_tx: SyncSender<TerminalEvent>,
 ) -> Result<JoinHandle<()>> {
     Ok(thread::Builder::new()
         .name("bifur-terminal-reader".into())
@@ -191,9 +195,11 @@ fn spawn_reader_thread(
                         if let Ok(mut screen) = screen.write() {
                             screen.push_bytes(&bytes[..read]);
                         }
-                        if event_tx.send(TerminalEvent::OutputReady).is_err() {
-                            break;
-                        }
+
+                        // Full means a repaint is already pending; disconnected means
+                        // the frontend stopped listening. Neither condition should ever
+                        // stop PTY parsing, otherwise the child can block on a full PTY.
+                        let _ = event_tx.try_send(TerminalEvent::OutputReady);
                     }
                 }
             }
