@@ -28,6 +28,72 @@ enum ActiveSide {
     Right,
 }
 
+fn terminal_control_byte(key: &str) -> Option<u8> {
+    match key {
+        "space" | "@" => Some(0x00),
+        "[" => Some(0x1b),
+        "\\" => Some(0x1c),
+        "]" => Some(0x1d),
+        "^" => Some(0x1e),
+        "_" => Some(0x1f),
+        "?" => Some(0x7f),
+        _ if key.len() == 1 => {
+            let byte = key.as_bytes()[0];
+            if byte.is_ascii_alphabetic() {
+                Some(byte.to_ascii_uppercase() & 0x1f)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn terminal_key_bytes(keystroke: &Keystroke) -> Option<Vec<u8>> {
+    let modifiers = &keystroke.modifiers;
+    if modifiers.platform || modifiers.function {
+        return None;
+    }
+
+    if modifiers.control {
+        let control = terminal_control_byte(keystroke.key.as_str())?;
+        let mut bytes = Vec::with_capacity(if modifiers.alt { 2 } else { 1 });
+        if modifiers.alt {
+            bytes.push(0x1b);
+        }
+        bytes.push(control);
+        return Some(bytes);
+    }
+
+    if !modifiers.modified() {
+        return match keystroke.key.as_str() {
+            "enter" => Some(b"\r".to_vec()),
+            "backspace" => Some(vec![0x7f]),
+            "tab" => Some(b"\t".to_vec()),
+            "escape" => Some(vec![0x1b]),
+            "up" => Some(b"\x1b[A".to_vec()),
+            "down" => Some(b"\x1b[B".to_vec()),
+            "right" => Some(b"\x1b[C".to_vec()),
+            "left" => Some(b"\x1b[D".to_vec()),
+            _ => keystroke
+                .key_char
+                .as_ref()
+                .filter(|text| !text.is_empty())
+                .map(|text| text.as_bytes().to_vec()),
+        };
+    }
+
+    let mut bytes = keystroke
+        .key_char
+        .as_ref()
+        .filter(|text| !text.is_empty())
+        .map(|text| text.as_bytes().to_vec())?;
+    if modifiers.alt {
+        bytes.insert(0, 0x1b);
+    }
+    Some(bytes)
+}
+
 impl BifurApp {
     fn new(home: PathBuf, cx: &mut Context<Self>) -> Self {
         let mut terminal = TerminalSession::spawn(TerminalConfig {
@@ -128,39 +194,7 @@ impl BifurApp {
     }
 
     fn send_terminal_key(&mut self, event: &KeyDownEvent) -> bool {
-        let keystroke = &event.keystroke;
-        let key = keystroke.key.as_str();
-
-        let bytes: Option<Vec<u8>> = if !keystroke.modifiers.modified() {
-            match key {
-                "enter" => Some(b"\r".to_vec()),
-                "backspace" => Some(vec![0x7f]),
-                "tab" => Some(b"\t".to_vec()),
-                "escape" => Some(vec![0x1b]),
-                "up" => Some(b"\x1b[A".to_vec()),
-                "down" => Some(b"\x1b[B".to_vec()),
-                "right" => Some(b"\x1b[C".to_vec()),
-                "left" => Some(b"\x1b[D".to_vec()),
-                _ => keystroke
-                    .key_char
-                    .as_ref()
-                    .filter(|text| !text.is_empty())
-                    .map(|text| text.as_bytes().to_vec()),
-            }
-        } else if !keystroke.modifiers.control
-            && !keystroke.modifiers.platform
-            && !keystroke.modifiers.function
-        {
-            keystroke
-                .key_char
-                .as_ref()
-                .filter(|text| !text.is_empty())
-                .map(|text| text.as_bytes().to_vec())
-        } else {
-            None
-        };
-
-        let Some(bytes) = bytes else {
+        let Some(bytes) = terminal_key_bytes(&event.keystroke) else {
             return false;
         };
         let Some(terminal) = &mut self.terminal else {
@@ -354,7 +388,7 @@ impl Render for BifurApp {
                     )
                     .child(div().ml_auto().text_sm().text_color(rgb(0x888888)).child(
                         if self.terminal_focused {
-                            "Terminal input active | F6 pane mode"
+                            "Terminal input active | Ctrl/Alt enabled | F6 pane mode"
                         } else {
                             "F6 terminal | Tab pane | ↑↓/j/k select | Enter open | Backspace up"
                         },
