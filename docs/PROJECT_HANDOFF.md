@@ -15,58 +15,69 @@ Primary frontend: GPUI on macOS first. Future frontend: Flutter, reusing `crates
 5. Use `NativePtySystem` for cross-platform support, including Windows ConPTY.
 6. When active pane/cwd changes, synchronize the running terminal with `session.set_cwd()`.
 7. Keep `CommandBlock` history as a first-class core model for future AI functionality.
+8. Filesystem paths remain lossless `PathBuf` values in core; lossy conversion is display/bridge-only.
 
-## Implemented baseline
+## M0 status
+
+M0 was merged to `main` through PR #1.
+
+Delivered:
+
+- Rust workspace: `core`, `gpui_app`, `bridge`
+- `NativePtySystem` terminal session
+- core-owned PTY reader/parser and `ScreenBuffer`
+- cross-platform cwd escaping
+- `CommandBlock` history model
+- GPUI `TerminalView`
+- Flutter bridge baseline
+- bounded text preview
+- lossless internal filesystem paths
+- incremental UTF-8 handling across PTY reads
+- code walkthrough + handoff + CI
+
+## M1 current branch
+
+Branch: `feature/m1-interactive-dual-pane`
+
+Implemented in the first M1 slice:
 
 ### Core
 
-- directory listing and dual-pane state
-- directory enter/up navigation primitives
-- preview classification
-- batch rename preview
-- native PTY session spawn
-- dedicated PTY reader thread
-- core-owned `ScreenBuffer`
-- terminal resize/input/cwd APIs
-- POSIX/PowerShell/cmd cwd escaping
-- command-block history storage
-- parser and cwd unit tests
+- `PaneState::select_next()`
+- `PaneState::select_previous()`
+- `enter() -> bool`
+- `up() -> bool`
+- selection-boundary unit test
 
 ### GPUI
 
-- dual-pane visual shell
-- preview column
-- terminal renderer that consumes `ScreenBuffer`
-- terminal session bootstrapped at the initial pane cwd
+- root `FocusHandle`
+- root keyboard event handling
+- `Tab` switches active pane
+- `Up/Down` and `j/k` move selection
+- `Enter` opens the selected directory
+- `Backspace` moves to the parent directory
+- all pane/cwd transitions funnel through `sync_terminal_cwd()`
+- active pane changes call `TerminalSession::set_cwd()`
 
-### Flutter bridge
+## M1 remaining work
 
-- initial FRB crate
-- file listing API
-- batch rename preview API
+1. Add explicit terminal-vs-pane focus mode.
+2. Forward terminal-focused key input to `TerminalSession::send_input()`.
+3. Add event-driven GPUI invalidation when the PTY reader updates `ScreenBuffer`.
+4. Resize PTY/`ScreenBuffer` from terminal view bounds.
+5. Wire `notify` to pane refresh without blocking render.
+6. Expand parser toward VT100/xterm semantics while preserving `ScreenBuffer` API.
+7. Pin a known-good GPUI revision once macOS validation is complete.
 
 ## Current limitations
 
-- GPUI keyboard actions are not wired yet.
-- Active-pane switching is not yet calling `TerminalSession::set_cwd()` because pane interaction handlers are still pending.
-- Terminal parser is intentionally minimal; full VT100/xterm cursor/style semantics are not implemented.
-- `CommandBlock` exists but command-boundary detection is not wired to shell integration yet.
-- File watching via `notify` is not wired to pane refresh yet.
-- Directory loading is synchronous.
-- Windows is architecturally supported by `NativePtySystem`, but GPUI/Windows validation remains future work.
-
-## Next milestone: M1 interactive dual pane + terminal
-
-Recommended order:
-
-1. Add GPUI focus model and actions: Tab, Up/Down or j/k, Enter, Backspace.
-2. Make active-pane changes call one method that also invokes `terminal.set_cwd(active_path)`.
-3. Forward terminal-focused key input to `TerminalSession::send_input()`.
-4. Add event-driven GPUI invalidation so new `ScreenBuffer` output repaints without blocking the UI thread.
-5. Add terminal resize based on GPUI bounds.
-6. Replace the minimal parser with a VT100/xterm-compatible parser while preserving `ScreenBuffer` API.
-7. Wire `notify` to refresh pane contents without blocking the render path.
-8. Pin a known-good GPUI revision once the first macOS build is validated.
+- terminal is rendered but does not yet accept GPUI keyboard input
+- PTY output does not yet trigger event-driven repaint
+- terminal resize is not connected to GPUI bounds
+- file watching is not wired
+- directory loading remains synchronous
+- Windows PTY architecture is present but not yet validated with the GPUI frontend
 
 ## Validation commands
 
@@ -85,5 +96,7 @@ Format before every push. If GPUI upstream breaks, isolate the frontend failure 
 - Enter opens a directory; Backspace goes up.
 - Terminal cwd follows the active pane after every navigation/switch.
 - Terminal accepts keyboard input and displays shell output.
+- PTY output triggers repaint without blocking the UI thread.
+- Terminal resize follows GPUI bounds.
 - Core tests stay green and core still has zero GPUI dependencies.
 - Handoff and code walkthrough are updated with architectural changes.
