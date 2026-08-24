@@ -16,6 +16,7 @@ struct BifurApp {
     terminal: Option<TerminalSession>,
     terminal_status: Option<String>,
     terminal_focused: bool,
+    terminal_repaint_task: Option<Task<()>>,
     focus_handle: FocusHandle,
     left_scroll: ScrollHandle,
     right_scroll: ScrollHandle,
@@ -29,18 +30,47 @@ enum ActiveSide {
 
 impl BifurApp {
     fn new(home: PathBuf, cx: &mut Context<Self>) -> Self {
+        let mut terminal = TerminalSession::spawn(TerminalConfig {
+            cwd: home.clone(),
+            ..TerminalConfig::default()
+        })
+        .ok();
+
+        let terminal_repaint_task = terminal
+            .as_mut()
+            .and_then(TerminalSession::take_event_receiver)
+            .map(|event_rx| {
+                cx.spawn(async move |this, cx| {
+                    let mut event_rx = event_rx;
+                    loop {
+                        let (next_rx, event) = cx
+                            .background_spawn(async move {
+                                let event = event_rx.recv();
+                                (event_rx, event)
+                            })
+                            .await;
+                        event_rx = next_rx;
+
+                        if event.is_err() {
+                            break;
+                        }
+
+                        if this.update(cx, |_, cx| cx.notify()).is_err() {
+                            break;
+                        }
+                    }
+                })
+            });
+
         Self {
             left: PaneState::new(home.clone()),
-            right: PaneState::new(home.clone()),
+            right: PaneState::new(home),
             active: ActiveSide::Left,
             preview_content: "Select a file to preview...".to_string(),
-            terminal: TerminalSession::spawn(TerminalConfig {
-                cwd: home,
-                ..TerminalConfig::default()
-            })
-            .ok(),
+            terminal,
             terminal_status: None,
             terminal_focused: false,
+            terminal_repaint_task,
             focus_handle: cx.focus_handle(),
             left_scroll: ScrollHandle::new(),
             right_scroll: ScrollHandle::new(),
@@ -121,9 +151,6 @@ impl BifurApp {
             && !keystroke.modifiers.platform
             && !keystroke.modifiers.function
         {
-            // Printable text must come from key_char, not the normalized key
-            // identity. This preserves Shift-produced punctuation/case and
-            // non-US keyboard layouts (including IME-produced characters).
             keystroke
                 .key_char
                 .as_ref()
@@ -301,6 +328,7 @@ impl Focusable for BifurApp {
 
 impl Render for BifurApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _keep_terminal_repaint_task_alive = &self.terminal_repaint_task;
         let active = self.active;
         div()
             .id("bifur-root")
