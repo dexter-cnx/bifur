@@ -172,7 +172,9 @@ impl Drop for TerminalSession {
 
 fn default_shell() -> String {
     if cfg!(windows) {
-        std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".into())
+        std::env::var("SHELL")
+            .or_else(|_| std::env::var("COMSPEC"))
+            .unwrap_or_else(|_| "pwsh.exe".into())
     } else {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())
     }
