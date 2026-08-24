@@ -96,23 +96,39 @@ impl BifurApp {
     }
 
     fn send_terminal_key(&mut self, event: &KeyDownEvent) -> bool {
-        if event.keystroke.modifiers.modified() {
-            return false;
-        }
+        let keystroke = &event.keystroke;
+        let key = keystroke.key.as_str();
 
-        let key = event.keystroke.key.as_str();
-        let bytes: Option<Vec<u8>> = match key {
-            "enter" => Some(b"\r".to_vec()),
-            "backspace" => Some(vec![0x7f]),
-            "tab" => Some(b"\t".to_vec()),
-            "escape" => Some(vec![0x1b]),
-            "up" => Some(b"\x1b[A".to_vec()),
-            "down" => Some(b"\x1b[B".to_vec()),
-            "right" => Some(b"\x1b[C".to_vec()),
-            "left" => Some(b"\x1b[D".to_vec()),
-            "space" => Some(b" ".to_vec()),
-            _ if key.chars().count() == 1 => Some(key.as_bytes().to_vec()),
-            _ => None,
+        let bytes: Option<Vec<u8>> = if !keystroke.modifiers.modified() {
+            match key {
+                "enter" => Some(b"\r".to_vec()),
+                "backspace" => Some(vec![0x7f]),
+                "tab" => Some(b"\t".to_vec()),
+                "escape" => Some(vec![0x1b]),
+                "up" => Some(b"\x1b[A".to_vec()),
+                "down" => Some(b"\x1b[B".to_vec()),
+                "right" => Some(b"\x1b[C".to_vec()),
+                "left" => Some(b"\x1b[D".to_vec()),
+                _ => keystroke
+                    .key_char
+                    .as_ref()
+                    .filter(|text| !text.is_empty())
+                    .map(|text| text.as_bytes().to_vec()),
+            }
+        } else if !keystroke.modifiers.control
+            && !keystroke.modifiers.platform
+            && !keystroke.modifiers.function
+        {
+            // Printable text must come from key_char, not the normalized key
+            // identity. This preserves Shift-produced punctuation/case and
+            // non-US keyboard layouts (including IME-produced characters).
+            keystroke
+                .key_char
+                .as_ref()
+                .filter(|text| !text.is_empty())
+                .map(|text| text.as_bytes().to_vec())
+        } else {
+            None
         };
 
         let Some(bytes) = bytes else {
