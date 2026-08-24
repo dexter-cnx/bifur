@@ -225,6 +225,12 @@ impl BifurApp {
         label: &str,
     ) -> Div {
         let selected = pane.selected;
+        let scroll_id = if label == "LEFT" {
+            "left-pane-scroll"
+        } else {
+            "right-pane-scroll"
+        };
+
         div()
             .flex_1()
             .flex()
@@ -253,6 +259,7 @@ impl BifurApp {
             )
             .child(
                 div()
+                    .id(scroll_id)
                     .flex_1()
                     .overflow_scroll()
                     .track_scroll(scroll)
