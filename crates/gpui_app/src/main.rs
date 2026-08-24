@@ -38,8 +38,8 @@ fn terminal_size_for_window(window: &Window) -> (u16, u16) {
     let size = window.bounds().size;
     let usable_width =
         (TERMINAL_PANEL_WIDTH_PX - TERMINAL_HORIZONTAL_CHROME_PX).max(TERMINAL_CELL_WIDTH_PX);
-    let usable_height = (f32::from(size.height) - TERMINAL_VERTICAL_CHROME_PX)
-        .max(TERMINAL_LINE_HEIGHT_PX);
+    let usable_height =
+        (f32::from(size.height) - TERMINAL_VERTICAL_CHROME_PX).max(TERMINAL_LINE_HEIGHT_PX);
     let cols = (usable_width / TERMINAL_CELL_WIDTH_PX)
         .floor()
         .clamp(1.0, u16::MAX as f32) as u16;
