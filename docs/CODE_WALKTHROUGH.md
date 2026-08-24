@@ -14,11 +14,20 @@ The frontend is intentionally replaceable. File operations, preview decisions, t
 
 `crates/core/src/fs_model.rs` contains `PaneState` and `FileEntry`.
 
-`PaneState::read_dir` reads a directory, builds serializable entries, and sorts directories before files. `enter()` and `up()` mutate the current directory and refresh the list. This is synchronous in M0; large-directory background loading is a later milestone.
+`PaneState::read_dir` reads a directory, builds serializable entries, and sorts directories before files. Paths remain `PathBuf` internally so Unix non-UTF-8 filenames stay lossless.
+
+M1 adds frontend-neutral selection primitives:
+
+- `select_next()`
+- `select_previous()`
+- `enter() -> bool`
+- `up() -> bool`
+
+The boolean result lets a frontend repaint or synchronize dependent state only when navigation actually changes something.
 
 ## 3. Preview
 
-`crates/core/src/preview.rs` maps a selected path into `PreviewKind` using `mime_guess`. Text is capped before returning to a frontend, images are tagged for image rendering, and unknown content is treated as binary.
+`crates/core/src/preview.rs` maps a selected path into `PreviewKind` using `mime_guess`. Text previews use a bounded prefix read rather than loading an entire large file into memory. Images are tagged for image rendering, and unknown content is treated as binary.
 
 ## 4. Terminal architecture
 
@@ -55,7 +64,9 @@ This replaces the unsafe pattern of interpolating a path directly into `cd '...'
 
 ### ScreenBuffer
 
-`crates/core/src/terminal/parser.rs` is the UI-neutral terminal surface. The M0 parser supports printable text, CR/LF, backspace, tab, scrolling, and suppresses basic CSI escape sequences from visible output.
+`crates/core/src/terminal/parser.rs` is the UI-neutral terminal surface. The parser supports printable text, CR/LF, backspace, tab, scrolling, and suppresses basic CSI escape sequences from visible output.
+
+PTY reads are arbitrary byte chunks, so `ScreenBuffer` retains incomplete trailing UTF-8 bytes between reads. A split Thai/Unicode code point therefore survives intact instead of being replaced by U+FFFD.
 
 The parser is intentionally replaceable. Full VT100/xterm cursor and style support can be added later without changing the frontend contract.
 
@@ -63,11 +74,21 @@ The parser is intentionally replaceable. Full VT100/xterm cursor and style suppo
 
 `crates/core/src/terminal/history.rs` stores command, output, cwd, exit code, and timestamp. Keeping this model from the beginning enables future AI features to work on structured command blocks instead of reconstructing history from rendered terminal text.
 
-## 5. GPUI terminal renderer
+## 5. GPUI interaction layer
 
-`crates/gpui_app/src/terminal_view.rs` depends on `ScreenBuffer`, not on `portable-pty`. It converts the snapshot into GPUI elements and displays the active cwd.
+`crates/gpui_app/src/main.rs` owns only presentation and interaction state. `BifurApp` now has a GPUI `FocusHandle` and tracks focus on the application root.
 
-The M0 app spawns `TerminalSession` at the initial pane directory. Keyboard forwarding, focus, terminal resize, repaint notification, and active-pane cwd synchronization are M1 work.
+The root receives unmodified key events:
+
+- `Tab`: switch active pane
+- `Down` / `j`: select next entry
+- `Up` / `k`: select previous entry
+- `Enter`: enter selected directory
+- `Backspace`: move to parent directory
+
+All directory-changing operations funnel through `sync_terminal_cwd()`. It copies the active pane `PathBuf` and calls `TerminalSession::set_cwd()`. This enforces the file-aware terminal rule without giving GPUI ownership of the PTY.
+
+`crates/gpui_app/src/terminal_view.rs` still depends on `ScreenBuffer`, not on `portable-pty`.
 
 ## 6. Flutter bridge
 
@@ -92,3 +113,13 @@ core -> Flutter types
 ```
 
 This dependency rule preserves the future Flutter frontend option.
+
+## 8. M1 remaining work
+
+The current M1 slice establishes pane focus/navigation and cwd synchronization. Remaining interactive-terminal work is:
+
+1. terminal-vs-pane focus mode and raw key forwarding to `TerminalSession::send_input()`
+2. event-driven repaint when the PTY reader updates `ScreenBuffer`
+3. PTY resize from GPUI terminal bounds
+4. `notify`-driven pane refresh outside the render path
+5. fuller VT100/xterm semantics while preserving the `ScreenBuffer` API

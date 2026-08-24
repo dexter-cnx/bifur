@@ -57,22 +57,48 @@ impl PaneState {
         entries
     }
 
-    pub fn enter(&mut self) {
-        if let Some(entry) = self.entries.get(self.selected) {
-            if entry.is_dir {
-                self.current_path = entry.path.clone();
-                self.entries = Self::read_dir(&self.current_path);
-                self.selected = 0;
-            }
+    pub fn select_next(&mut self) -> bool {
+        if self.entries.is_empty() || self.selected + 1 >= self.entries.len() {
+            return false;
         }
+        self.selected += 1;
+        true
     }
 
-    pub fn up(&mut self) {
-        if let Some(parent) = self.current_path.parent() {
-            self.current_path = parent.to_path_buf();
-            self.entries = Self::read_dir(&self.current_path);
-            self.selected = 0;
+    pub fn select_previous(&mut self) -> bool {
+        if self.entries.is_empty() || self.selected == 0 {
+            return false;
         }
+        self.selected -= 1;
+        true
+    }
+
+    pub fn enter(&mut self) -> bool {
+        let Some(entry) = self.entries.get(self.selected) else {
+            return false;
+        };
+        if !entry.is_dir {
+            return false;
+        }
+
+        self.current_path = entry.path.clone();
+        self.entries = Self::read_dir(&self.current_path);
+        self.selected = 0;
+        true
+    }
+
+    pub fn up(&mut self) -> bool {
+        let Some(parent) = self.current_path.parent() else {
+            return false;
+        };
+        if parent == self.current_path {
+            return false;
+        }
+
+        self.current_path = parent.to_path_buf();
+        self.entries = Self::read_dir(&self.current_path);
+        self.selected = 0;
+        true
     }
 }
 
@@ -88,8 +114,43 @@ pub fn batch_rename(paths: Vec<String>, pattern: String) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
+mod navigation_tests {
+    use super::PaneState;
+    use std::{fs, time::SystemTime};
+
+    fn temp_dir() -> std::path::PathBuf {
+        let mut root = std::env::temp_dir();
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        root.push(format!("bifur-nav-{unique}"));
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(root.join("b")).unwrap();
+        root
+    }
+
+    #[test]
+    fn selection_stays_inside_entry_bounds() {
+        let root = temp_dir();
+        let mut pane = PaneState::new(&root);
+
+        assert_eq!(pane.selected, 0);
+        assert!(pane.select_next());
+        assert_eq!(pane.selected, 1);
+        assert!(!pane.select_next());
+        assert_eq!(pane.selected, 1);
+        assert!(pane.select_previous());
+        assert_eq!(pane.selected, 0);
+        assert!(!pane.select_previous());
+
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
 #[cfg(all(test, unix))]
-mod tests {
+mod unix_tests {
     use super::PaneState;
     use std::{ffi::OsString, fs, os::unix::ffi::OsStringExt, time::SystemTime};
 
@@ -113,7 +174,7 @@ mod tests {
             .iter()
             .position(|entry| entry.path == child)
             .unwrap();
-        pane.enter();
+        assert!(pane.enter());
 
         assert_eq!(pane.current_path, child);
         let _ = fs::remove_dir_all(&root);

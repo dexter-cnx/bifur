@@ -12,6 +12,10 @@ struct BifurApp {
     active: ActiveSide,
     preview_content: String,
     terminal: Option<TerminalSession>,
+    terminal_status: Option<String>,
+    focus_handle: FocusHandle,
+    left_scroll: ScrollHandle,
+    right_scroll: ScrollHandle,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -21,6 +25,24 @@ enum ActiveSide {
 }
 
 impl BifurApp {
+    fn new(home: PathBuf, cx: &mut Context<Self>) -> Self {
+        Self {
+            left: PaneState::new(home.clone()),
+            right: PaneState::new(home.clone()),
+            active: ActiveSide::Left,
+            preview_content: "Select a file to preview...".to_string(),
+            terminal: TerminalSession::spawn(TerminalConfig {
+                cwd: home,
+                ..TerminalConfig::default()
+            })
+            .ok(),
+            terminal_status: None,
+            focus_handle: cx.focus_handle(),
+            left_scroll: ScrollHandle::new(),
+            right_scroll: ScrollHandle::new(),
+        }
+    }
+
     fn active_pane(&self) -> &PaneState {
         match self.active {
             ActiveSide::Left => &self.left,
@@ -28,7 +50,105 @@ impl BifurApp {
         }
     }
 
-    fn render_pane(&self, pane: &PaneState, is_active: bool, label: &str) -> Div {
+    fn active_pane_mut(&mut self) -> &mut PaneState {
+        match self.active {
+            ActiveSide::Left => &mut self.left,
+            ActiveSide::Right => &mut self.right,
+        }
+    }
+
+    fn active_scroll(&self) -> &ScrollHandle {
+        match self.active {
+            ActiveSide::Left => &self.left_scroll,
+            ActiveSide::Right => &self.right_scroll,
+        }
+    }
+
+    fn reveal_selection(&self) {
+        self.active_scroll()
+            .scroll_to_item(self.active_pane().selected);
+    }
+
+    fn sync_terminal_cwd(&mut self) {
+        let cwd = self.active_pane().current_path.clone();
+        self.terminal_status = self.terminal.as_mut().and_then(|terminal| {
+            terminal
+                .set_cwd(cwd)
+                .err()
+                .map(|error| format!("Terminal cwd sync failed: {error}"))
+        });
+    }
+
+    fn switch_active_pane(&mut self) {
+        self.active = match self.active {
+            ActiveSide::Left => ActiveSide::Right,
+            ActiveSide::Right => ActiveSide::Left,
+        };
+        self.sync_terminal_cwd();
+        self.reveal_selection();
+    }
+
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+
+        let handled = match event.keystroke.key.as_str() {
+            "tab" => {
+                self.switch_active_pane();
+                true
+            }
+            "down" | "j" => {
+                let changed = self.active_pane_mut().select_next();
+                if changed {
+                    self.reveal_selection();
+                }
+                changed
+            }
+            "up" | "k" => {
+                let changed = self.active_pane_mut().select_previous();
+                if changed {
+                    self.reveal_selection();
+                }
+                changed
+            }
+            "enter" => {
+                let changed = self.active_pane_mut().enter();
+                if changed {
+                    self.sync_terminal_cwd();
+                    self.reveal_selection();
+                }
+                changed
+            }
+            "backspace" => {
+                let changed = self.active_pane_mut().up();
+                if changed {
+                    self.sync_terminal_cwd();
+                    self.reveal_selection();
+                }
+                changed
+            }
+            _ => false,
+        };
+
+        if handled {
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    fn render_pane(
+        &self,
+        pane: &PaneState,
+        scroll: &ScrollHandle,
+        is_active: bool,
+        label: &str,
+    ) -> Div {
         let selected = pane.selected;
         div()
             .flex_1()
@@ -56,44 +176,55 @@ impl BifurApp {
                             .child(format!("{} items", pane.entries.len())),
                     ),
             )
-            .child(div().flex_1().overflow_y_scroll().children(
-                pane.entries.iter().enumerate().map(|(index, entry)| {
-                    let is_selected = index == selected;
-                    div()
-                        .flex()
-                        .justify_between()
-                        .px_3()
-                        .py_1()
-                        .text_sm()
-                        .when(is_selected, |div| {
-                            div.bg(rgb(0x333333)).text_color(rgb(0xffffff))
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .gap_2()
-                                .child(div().child(if entry.is_dir { "📁" } else { "📄" }))
-                                .child(entry.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(0x777777))
-                                .child(if entry.is_dir {
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .track_scroll(scroll)
+                    .children(pane.entries.iter().enumerate().map(|(index, entry)| {
+                        let is_selected = index == selected;
+                        div()
+                            .flex()
+                            .justify_between()
+                            .px_3()
+                            .py_1()
+                            .text_sm()
+                            .when(is_selected, |div| {
+                                div.bg(rgb(0x333333)).text_color(rgb(0xffffff))
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(div().child(if entry.is_dir { "📁" } else { "📄" }))
+                                    .child(entry.name.clone()),
+                            )
+                            .child(div().text_xs().text_color(rgb(0x777777)).child(
+                                if entry.is_dir {
                                     String::new()
                                 } else {
                                     format!("{} KB", entry.size / 1024)
-                                }),
-                        )
-                }),
-            ))
+                                },
+                            ))
+                    })),
+            )
+    }
+}
+
+impl Focusable for BifurApp {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
     }
 }
 
 impl Render for BifurApp {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active;
         div()
+            .id("bifur-root")
+            .key_context("Bifur")
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::handle_key_down))
             .size_full()
             .flex()
             .flex_col()
@@ -116,18 +247,35 @@ impl Render for BifurApp {
                             .ml_auto()
                             .text_sm()
                             .text_color(rgb(0x888888))
-                            .child("Rust + GPUI | terminal core isolated from UI"),
+                            .child("Tab pane | ↑↓/j/k select | Enter open | Backspace up"),
                     ),
             )
+            .when_some(self.terminal_status.clone(), |root, status| {
+                root.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .text_xs()
+                        .bg(rgb(0x3a241d))
+                        .text_color(rgb(0xffb4a2))
+                        .child(status),
+                )
+            })
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .flex_1()
-                    .child(self.render_pane(&self.left.clone(), active == ActiveSide::Left, "LEFT"))
+                    .child(self.render_pane(
+                        &self.left.clone(),
+                        &self.left_scroll,
+                        active == ActiveSide::Left,
+                        "LEFT",
+                    ))
                     .child(div().w(px(1.)).bg(rgb(0x2a2a2a)))
                     .child(self.render_pane(
                         &self.right.clone(),
+                        &self.right_scroll,
                         active == ActiveSide::Right,
                         "RIGHT",
                     ))
@@ -163,18 +311,10 @@ impl Render for BifurApp {
 fn main() {
     App::new().run(|cx: &mut App| {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        cx.open_window(WindowOptions::default(), |_, cx| {
-            cx.new(|_| BifurApp {
-                left: PaneState::new(home.clone()),
-                right: PaneState::new(home.clone()),
-                active: ActiveSide::Left,
-                preview_content: "Select a file to preview...".to_string(),
-                terminal: TerminalSession::spawn(TerminalConfig {
-                    cwd: home.clone(),
-                    ..TerminalConfig::default()
-                })
-                .ok(),
-            })
+        cx.open_window(WindowOptions::default(), |window, cx| {
+            let app = cx.new(|cx| BifurApp::new(home, cx));
+            app.focus_handle(cx).focus(window, cx);
+            app
         })
         .expect("open BIFUR window");
     });
