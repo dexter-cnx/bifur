@@ -31,6 +31,7 @@ pub struct ScreenBuffer {
     cursor_col: usize,
     cursor_row: usize,
     ansi_state: AnsiState,
+    utf8_pending: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -52,6 +53,7 @@ impl ScreenBuffer {
             cursor_col: 0,
             cursor_row: 0,
             ansi_state: AnsiState::Ground,
+            utf8_pending: Vec::new(),
         }
     }
 
@@ -67,16 +69,54 @@ impl ScreenBuffer {
         }
         replacement.cursor_col = self.cursor_col.min(replacement.cols - 1);
         replacement.cursor_row = self.cursor_row.min(replacement.rows - 1);
+        replacement.ansi_state = self.ansi_state;
+        replacement.utf8_pending = std::mem::take(&mut self.utf8_pending);
         *self = replacement;
     }
 
     /// Initial parser: handles normal text/control characters and discards CSI
     /// control sequences so UI never sees raw escape bytes. A complete VT parser
     /// can replace this without changing the public ScreenBuffer contract.
+    ///
+    /// PTY reads may split a multibyte UTF-8 code point. `utf8_pending` retains
+    /// an incomplete trailing sequence until the next read instead of replacing
+    /// valid Unicode with U+FFFD.
     pub fn push_bytes(&mut self, bytes: &[u8]) {
-        let text = String::from_utf8_lossy(bytes);
-        for ch in text.chars() {
-            self.push_char(ch);
+        let mut data = std::mem::take(&mut self.utf8_pending);
+        data.extend_from_slice(bytes);
+
+        let mut offset = 0;
+        while offset < data.len() {
+            match std::str::from_utf8(&data[offset..]) {
+                Ok(text) => {
+                    for ch in text.chars() {
+                        self.push_char(ch);
+                    }
+                    break;
+                }
+                Err(error) => {
+                    let valid_end = offset + error.valid_up_to();
+                    if valid_end > offset {
+                        // SAFETY: `valid_up_to` guarantees this prefix is UTF-8.
+                        let valid = unsafe { std::str::from_utf8_unchecked(&data[offset..valid_end]) };
+                        for ch in valid.chars() {
+                            self.push_char(ch);
+                        }
+                    }
+                    offset = valid_end;
+
+                    match error.error_len() {
+                        Some(invalid_len) => {
+                            self.push_char('\u{FFFD}');
+                            offset += invalid_len;
+                        }
+                        None => {
+                            self.utf8_pending.extend_from_slice(&data[offset..]);
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -172,5 +212,15 @@ mod tests {
         let mut screen = ScreenBuffer::new(20, 2);
         screen.push_bytes(b"a\x1b[31mred\x1b[0mz");
         assert_eq!(screen.lines()[0], "aredz");
+    }
+
+    #[test]
+    fn preserves_utf8_split_across_pty_reads() {
+        let mut screen = ScreenBuffer::new(20, 2);
+        let thai = "ก".as_bytes();
+        screen.push_bytes(&thai[..1]);
+        assert_eq!(screen.lines()[0], "");
+        screen.push_bytes(&thai[1..]);
+        assert_eq!(screen.lines()[0], "ก");
     }
 }
