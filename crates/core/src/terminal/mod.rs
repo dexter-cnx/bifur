@@ -10,4 +10,4 @@ pub mod session;
 pub use file_aware::FileAwareTerminal;
 pub use history::CommandBlock;
 pub use parser::{Cell, ScreenBuffer};
-pub use session::{TerminalConfig, TerminalSession};
+pub use session::{TerminalConfig, TerminalEvent, TerminalSession};
