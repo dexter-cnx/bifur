@@ -36,9 +36,7 @@ impl BifurApp {
             .flex_col()
             .overflow_hidden()
             .when(is_active, |div| {
-                div.bg(rgb(0x1a1a1a))
-                    .border_2()
-                    .border_color(rgb(0x007aff))
+                div.bg(rgb(0x1a1a1a)).border_2().border_color(rgb(0x007aff))
             })
             .child(
                 div()
@@ -46,11 +44,11 @@ impl BifurApp {
                     .justify_between()
                     .p_2()
                     .bg(rgb(0x252525))
-                    .child(
-                        div()
-                            .text_xs()
-                            .child(format!("{} — {}", label, pane.current_path.display())),
-                    )
+                    .child(div().text_xs().child(format!(
+                        "{} — {}",
+                        label,
+                        pane.current_path.display()
+                    )))
                     .child(
                         div()
                             .text_xs()
@@ -58,40 +56,37 @@ impl BifurApp {
                             .child(format!("{} items", pane.entries.len())),
                     ),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .children(pane.entries.iter().enumerate().map(|(index, entry)| {
-                        let is_selected = index == selected;
-                        div()
-                            .flex()
-                            .justify_between()
-                            .px_3()
-                            .py_1()
-                            .text_sm()
-                            .when(is_selected, |div| {
-                                div.bg(rgb(0x333333)).text_color(rgb(0xffffff))
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_2()
-                                    .child(div().child(if entry.is_dir { "📁" } else { "📄" }))
-                                    .child(entry.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0x777777))
-                                    .child(if entry.is_dir {
-                                        String::new()
-                                    } else {
-                                        format!("{} KB", entry.size / 1024)
-                                    }),
-                            )
-                    })),
-            )
+            .child(div().flex_1().overflow_y_scroll().children(
+                pane.entries.iter().enumerate().map(|(index, entry)| {
+                    let is_selected = index == selected;
+                    div()
+                        .flex()
+                        .justify_between()
+                        .px_3()
+                        .py_1()
+                        .text_sm()
+                        .when(is_selected, |div| {
+                            div.bg(rgb(0x333333)).text_color(rgb(0xffffff))
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(div().child(if entry.is_dir { "📁" } else { "📄" }))
+                                .child(entry.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x777777))
+                                .child(if entry.is_dir {
+                                    String::new()
+                                } else {
+                                    format!("{} KB", entry.size / 1024)
+                                }),
+                        )
+                }),
+            ))
     }
 }
 
@@ -131,7 +126,11 @@ impl Render for BifurApp {
                     .flex_1()
                     .child(self.render_pane(&self.left.clone(), active == ActiveSide::Left, "LEFT"))
                     .child(div().w(px(1.)).bg(rgb(0x2a2a2a)))
-                    .child(self.render_pane(&self.right.clone(), active == ActiveSide::Right, "RIGHT"))
+                    .child(self.render_pane(
+                        &self.right.clone(),
+                        active == ActiveSide::Right,
+                        "RIGHT",
+                    ))
                     .child(div().w(px(1.)).bg(rgb(0x2a2a2a)))
                     .child(
                         div()
@@ -143,12 +142,8 @@ impl Render for BifurApp {
                             .child(div().text_sm().text_color(rgb(0x888888)).child("PREVIEW"))
                             .child(div().mt_2().text_xs().child(self.preview_content.clone()))
                             .child(
-                                div()
-                                    .mt_4()
-                                    .p_2()
-                                    .bg(rgb(0x222222))
-                                    .rounded_md()
-                                    .child(match &self.terminal {
+                                div().mt_4().p_2().bg(rgb(0x222222)).rounded_md().child(
+                                    match &self.terminal {
                                         Some(session) => TerminalView::render(
                                             &session.screen_snapshot(),
                                             &self.active_pane().current_path.display().to_string(),
@@ -157,7 +152,8 @@ impl Render for BifurApp {
                                             .text_xs()
                                             .text_color(rgb(0x888888))
                                             .child("Terminal unavailable"),
-                                    }),
+                                    },
+                                ),
                             ),
                     ),
             )
