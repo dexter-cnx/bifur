@@ -146,6 +146,13 @@ impl TerminalSession {
             })
     }
 
+    pub fn application_cursor_keys(&self) -> bool {
+        self.screen
+            .read()
+            .map(|screen| screen.application_cursor_keys())
+            .unwrap_or(false)
+    }
+
     /// Transfers the terminal output event receiver to the frontend.
     ///
     /// The receiver is intentionally single-consumer: one frontend owns repaint
