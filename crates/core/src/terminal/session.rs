@@ -137,9 +137,12 @@ impl TerminalSession {
     }
 
     pub fn screen_snapshot(&self) -> ScreenBuffer {
-        self.screen.read().map(|screen| screen.clone()).unwrap_or_else(|_| {
-            ScreenBuffer::new(self.config.cols as usize, self.config.rows as usize)
-        })
+        self.screen
+            .read()
+            .map(|screen| screen.clone())
+            .unwrap_or_else(|_| {
+                ScreenBuffer::new(self.config.cols as usize, self.config.rows as usize)
+            })
     }
 
     pub fn command_history(&self) -> Vec<CommandBlock> {
