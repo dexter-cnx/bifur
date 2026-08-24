@@ -299,17 +299,13 @@ impl Render for BifurApp {
                             .font_weight(FontWeight::BOLD)
                             .child("BIFUR — Dual Pane File Manager"),
                     )
-                    .child(
-                        div()
-                            .ml_auto()
-                            .text_sm()
-                            .text_color(rgb(0x888888))
-                            .child(if self.terminal_focused {
-                                "Terminal input active | F6 pane mode"
-                            } else {
-                                "F6 terminal | Tab pane | ↑↓/j/k select | Enter open | Backspace up"
-                            }),
-                    ),
+                    .child(div().ml_auto().text_sm().text_color(rgb(0x888888)).child(
+                        if self.terminal_focused {
+                            "Terminal input active | F6 pane mode"
+                        } else {
+                            "F6 terminal | Tab pane | ↑↓/j/k select | Enter open | Backspace up"
+                        },
+                    )),
             )
             .when_some(self.terminal_status.clone(), |root, status| {
                 root.child(
