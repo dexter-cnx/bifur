@@ -1,8 +1,4 @@
-use std::{
-    fs::File,
-    io::Read,
-    path::Path,
-};
+use std::{fs::File, io::Read, path::Path};
 
 pub enum PreviewKind {
     Image,
@@ -35,7 +31,11 @@ fn read_text_prefix(path: &Path) -> String {
     };
 
     let mut bytes = Vec::with_capacity(MAX_PREVIEW_BYTES as usize);
-    if file.take(MAX_PREVIEW_BYTES).read_to_end(&mut bytes).is_err() {
+    if file
+        .take(MAX_PREVIEW_BYTES)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
         return String::new();
     }
 
