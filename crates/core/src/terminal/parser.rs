@@ -98,7 +98,8 @@ impl ScreenBuffer {
                     let valid_end = offset + error.valid_up_to();
                     if valid_end > offset {
                         // SAFETY: `valid_up_to` guarantees this prefix is UTF-8.
-                        let valid = unsafe { std::str::from_utf8_unchecked(&data[offset..valid_end]) };
+                        let valid =
+                            unsafe { std::str::from_utf8_unchecked(&data[offset..valid_end]) };
                         for ch in valid.chars() {
                             self.push_char(ch);
                         }
