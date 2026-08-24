@@ -4,6 +4,7 @@ resolver = "2"
 
 [workspace.dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", package = "gpui_platform" }
 notify = "6.1"
 walkdir = "2.4"
 rayon = "1.8"
