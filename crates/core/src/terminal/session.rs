@@ -130,7 +130,7 @@ impl TerminalSession {
         if self.config.cwd == new_cwd {
             return Ok(());
         }
-        let command = shell_cd_command(&self.config.shell, &new_cwd);
+        let command = shell_cd_command(&self.config.shell, &new_cwd)?;
         self.send_input(command.as_bytes())?;
         self.config.cwd = new_cwd;
         Ok(())
