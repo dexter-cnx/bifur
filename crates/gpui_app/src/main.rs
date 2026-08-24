@@ -28,6 +28,123 @@ enum ActiveSide {
     Right,
 }
 
+fn terminal_control_byte(key: &str) -> Option<u8> {
+    match key {
+        "space" | "@" => Some(0x00),
+        "[" => Some(0x1b),
+        "\\" => Some(0x1c),
+        "]" => Some(0x1d),
+        "^" => Some(0x1e),
+        "_" => Some(0x1f),
+        "?" => Some(0x7f),
+        _ if key.len() == 1 => {
+            let byte = key.as_bytes()[0];
+            if byte.is_ascii_alphabetic() {
+                Some(byte.to_ascii_uppercase() & 0x1f)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn printable_key_char(keystroke: &Keystroke) -> Option<&str> {
+    keystroke
+        .key_char
+        .as_deref()
+        .filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
+}
+
+fn is_altgr_printable(keystroke: &Keystroke) -> bool {
+    let modifiers = &keystroke.modifiers;
+    if !modifiers.control || !modifiers.alt || modifiers.platform || modifiers.function {
+        return false;
+    }
+
+    let Some(produced) = printable_key_char(keystroke) else {
+        return false;
+    };
+
+    // AltGr is typically surfaced by GPUI as Ctrl+Alt plus a produced printable
+    // character that differs from the underlying key (for example AltGr+Q -> @).
+    produced != keystroke.key
+}
+
+fn control_key_identity(keystroke: &Keystroke) -> &str {
+    if let Some(produced) = printable_key_char(keystroke) {
+        if matches!(produced, "@" | "[" | "\\" | "]" | "^" | "_" | "?") {
+            return produced;
+        }
+    }
+
+    keystroke.key.as_str()
+}
+
+fn alt_meta_text(keystroke: &Keystroke) -> Option<String> {
+    let produced = printable_key_char(keystroke)?;
+    if produced.is_ascii() {
+        return Some(produced.to_string());
+    }
+
+    // macOS Option may transform the produced glyph (Option+F -> ƒ). For
+    // terminal Meta input, prefer the underlying ASCII key and preserve Shift.
+    if keystroke.key.len() == 1 && keystroke.key.is_ascii() {
+        let mut key = keystroke.key.clone();
+        if keystroke.modifiers.shift {
+            key.make_ascii_uppercase();
+        }
+        return Some(key);
+    }
+
+    Some(produced.to_string())
+}
+
+fn terminal_key_bytes(keystroke: &Keystroke) -> Option<Vec<u8>> {
+    let modifiers = &keystroke.modifiers;
+    if modifiers.platform || modifiers.function {
+        return None;
+    }
+
+    if is_altgr_printable(keystroke) {
+        return printable_key_char(keystroke).map(|text| text.as_bytes().to_vec());
+    }
+
+    if modifiers.control {
+        let control = terminal_control_byte(control_key_identity(keystroke))?;
+        let mut bytes = Vec::with_capacity(if modifiers.alt { 2 } else { 1 });
+        if modifiers.alt {
+            bytes.push(0x1b);
+        }
+        bytes.push(control);
+        return Some(bytes);
+    }
+
+    if !modifiers.modified() {
+        return match keystroke.key.as_str() {
+            "enter" => Some(b"\r".to_vec()),
+            "backspace" => Some(vec![0x7f]),
+            "tab" => Some(b"\t".to_vec()),
+            "escape" => Some(vec![0x1b]),
+            "up" => Some(b"\x1b[A".to_vec()),
+            "down" => Some(b"\x1b[B".to_vec()),
+            "right" => Some(b"\x1b[C".to_vec()),
+            "left" => Some(b"\x1b[D".to_vec()),
+            _ => printable_key_char(keystroke).map(|text| text.as_bytes().to_vec()),
+        };
+    }
+
+    if modifiers.alt {
+        let text = alt_meta_text(keystroke)?;
+        let mut bytes = Vec::with_capacity(1 + text.len());
+        bytes.push(0x1b);
+        bytes.extend_from_slice(text.as_bytes());
+        return Some(bytes);
+    }
+
+    printable_key_char(keystroke).map(|text| text.as_bytes().to_vec())
+}
+
 impl BifurApp {
     fn new(home: PathBuf, cx: &mut Context<Self>) -> Self {
         let mut terminal = TerminalSession::spawn(TerminalConfig {
@@ -128,39 +245,7 @@ impl BifurApp {
     }
 
     fn send_terminal_key(&mut self, event: &KeyDownEvent) -> bool {
-        let keystroke = &event.keystroke;
-        let key = keystroke.key.as_str();
-
-        let bytes: Option<Vec<u8>> = if !keystroke.modifiers.modified() {
-            match key {
-                "enter" => Some(b"\r".to_vec()),
-                "backspace" => Some(vec![0x7f]),
-                "tab" => Some(b"\t".to_vec()),
-                "escape" => Some(vec![0x1b]),
-                "up" => Some(b"\x1b[A".to_vec()),
-                "down" => Some(b"\x1b[B".to_vec()),
-                "right" => Some(b"\x1b[C".to_vec()),
-                "left" => Some(b"\x1b[D".to_vec()),
-                _ => keystroke
-                    .key_char
-                    .as_ref()
-                    .filter(|text| !text.is_empty())
-                    .map(|text| text.as_bytes().to_vec()),
-            }
-        } else if !keystroke.modifiers.control
-            && !keystroke.modifiers.platform
-            && !keystroke.modifiers.function
-        {
-            keystroke
-                .key_char
-                .as_ref()
-                .filter(|text| !text.is_empty())
-                .map(|text| text.as_bytes().to_vec())
-        } else {
-            None
-        };
-
-        let Some(bytes) = bytes else {
+        let Some(bytes) = terminal_key_bytes(&event.keystroke) else {
             return false;
         };
         let Some(terminal) = &mut self.terminal else {
@@ -354,7 +439,7 @@ impl Render for BifurApp {
                     )
                     .child(div().ml_auto().text_sm().text_color(rgb(0x888888)).child(
                         if self.terminal_focused {
-                            "Terminal input active | F6 pane mode"
+                            "Terminal input active | Ctrl/Alt enabled | F6 pane mode"
                         } else {
                             "F6 terminal | Tab pane | ↑↓/j/k select | Enter open | Backspace up"
                         },
