@@ -199,16 +199,13 @@ impl BifurApp {
                                     .child(div().child(if entry.is_dir { "📁" } else { "📄" }))
                                     .child(entry.name.clone()),
                             )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0x777777))
-                                    .child(if entry.is_dir {
-                                        String::new()
-                                    } else {
-                                        format!("{} KB", entry.size / 1024)
-                                    }),
-                            )
+                            .child(div().text_xs().text_color(rgb(0x777777)).child(
+                                if entry.is_dir {
+                                    String::new()
+                                } else {
+                                    format!("{} KB", entry.size / 1024)
+                                },
+                            ))
                     })),
             )
     }
