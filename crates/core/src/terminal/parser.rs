@@ -148,8 +148,7 @@ impl ScreenBuffer {
     fn scroll_up(&mut self) {
         for row in 1..self.rows {
             for col in 0..self.cols {
-                self.cells[(row - 1) * self.cols + col] =
-                    self.cells[row * self.cols + col].clone();
+                self.cells[(row - 1) * self.cols + col] = self.cells[row * self.cols + col].clone();
             }
         }
         let start = (self.rows - 1) * self.cols;
