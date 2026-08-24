@@ -133,7 +133,8 @@ fn terminal_key_bytes(keystroke: &Keystroke, application_cursor_keys: bool) -> O
     // while retaining the function modifier. Treat Fn as a physical translation
     // for otherwise-unmodified navigation keys instead of rejecting it.
     if !modifiers.control && !modifiers.alt && !modifiers.shift {
-        if let Some(bytes) = terminal_navigation_bytes(keystroke.key.as_str(), application_cursor_keys)
+        if let Some(bytes) =
+            terminal_navigation_bytes(keystroke.key.as_str(), application_cursor_keys)
         {
             return Some(bytes);
         }
