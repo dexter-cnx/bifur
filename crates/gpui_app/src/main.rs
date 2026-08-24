@@ -49,14 +49,69 @@ fn terminal_control_byte(key: &str) -> Option<u8> {
     }
 }
 
+fn printable_key_char(keystroke: &Keystroke) -> Option<&str> {
+    keystroke
+        .key_char
+        .as_deref()
+        .filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
+}
+
+fn is_altgr_printable(keystroke: &Keystroke) -> bool {
+    let modifiers = &keystroke.modifiers;
+    if !modifiers.control || !modifiers.alt || modifiers.platform || modifiers.function {
+        return false;
+    }
+
+    let Some(produced) = printable_key_char(keystroke) else {
+        return false;
+    };
+
+    // AltGr is typically surfaced by GPUI as Ctrl+Alt plus a produced printable
+    // character that differs from the underlying key (for example AltGr+Q -> @).
+    produced != keystroke.key
+}
+
+fn control_key_identity(keystroke: &Keystroke) -> &str {
+    if let Some(produced) = printable_key_char(keystroke)
+        && matches!(produced, "@" | "[" | "\\" | "]" | "^" | "_" | "?")
+    {
+        return produced;
+    }
+
+    keystroke.key.as_str()
+}
+
+fn alt_meta_text(keystroke: &Keystroke) -> Option<String> {
+    let produced = printable_key_char(keystroke)?;
+    if produced.is_ascii() {
+        return Some(produced.to_string());
+    }
+
+    // macOS Option may transform the produced glyph (Option+F -> ƒ). For
+    // terminal Meta input, prefer the underlying ASCII key and preserve Shift.
+    if keystroke.key.len() == 1 && keystroke.key.is_ascii() {
+        let mut key = keystroke.key.clone();
+        if keystroke.modifiers.shift {
+            key.make_ascii_uppercase();
+        }
+        return Some(key);
+    }
+
+    Some(produced.to_string())
+}
+
 fn terminal_key_bytes(keystroke: &Keystroke) -> Option<Vec<u8>> {
     let modifiers = &keystroke.modifiers;
     if modifiers.platform || modifiers.function {
         return None;
     }
 
+    if is_altgr_printable(keystroke) {
+        return printable_key_char(keystroke).map(|text| text.as_bytes().to_vec());
+    }
+
     if modifiers.control {
-        let control = terminal_control_byte(keystroke.key.as_str())?;
+        let control = terminal_control_byte(control_key_identity(keystroke))?;
         let mut bytes = Vec::with_capacity(if modifiers.alt { 2 } else { 1 });
         if modifiers.alt {
             bytes.push(0x1b);
@@ -75,23 +130,19 @@ fn terminal_key_bytes(keystroke: &Keystroke) -> Option<Vec<u8>> {
             "down" => Some(b"\x1b[B".to_vec()),
             "right" => Some(b"\x1b[C".to_vec()),
             "left" => Some(b"\x1b[D".to_vec()),
-            _ => keystroke
-                .key_char
-                .as_ref()
-                .filter(|text| !text.is_empty())
-                .map(|text| text.as_bytes().to_vec()),
+            _ => printable_key_char(keystroke).map(|text| text.as_bytes().to_vec()),
         };
     }
 
-    let mut bytes = keystroke
-        .key_char
-        .as_ref()
-        .filter(|text| !text.is_empty())
-        .map(|text| text.as_bytes().to_vec())?;
     if modifiers.alt {
-        bytes.insert(0, 0x1b);
+        let text = alt_meta_text(keystroke)?;
+        let mut bytes = Vec::with_capacity(1 + text.len());
+        bytes.push(0x1b);
+        bytes.extend_from_slice(text.as_bytes());
+        return Some(bytes);
     }
-    Some(bytes)
+
+    printable_key_char(keystroke).map(|text| text.as_bytes().to_vec())
 }
 
 impl BifurApp {
