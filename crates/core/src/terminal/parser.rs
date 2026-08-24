@@ -31,6 +31,8 @@ pub struct ScreenBuffer {
     cursor_col: usize,
     cursor_row: usize,
     ansi_state: AnsiState,
+    csi_params: String,
+    application_cursor_keys: bool,
     utf8_pending: Vec<u8>,
 }
 
@@ -53,6 +55,8 @@ impl ScreenBuffer {
             cursor_col: 0,
             cursor_row: 0,
             ansi_state: AnsiState::Ground,
+            csi_params: String::new(),
+            application_cursor_keys: false,
             utf8_pending: Vec::new(),
         }
     }
@@ -70,8 +74,14 @@ impl ScreenBuffer {
         replacement.cursor_col = self.cursor_col.min(replacement.cols - 1);
         replacement.cursor_row = self.cursor_row.min(replacement.rows - 1);
         replacement.ansi_state = self.ansi_state;
+        replacement.csi_params = std::mem::take(&mut self.csi_params);
+        replacement.application_cursor_keys = self.application_cursor_keys;
         replacement.utf8_pending = std::mem::take(&mut self.utf8_pending);
         *self = replacement;
+    }
+
+    pub fn application_cursor_keys(&self) -> bool {
+        self.application_cursor_keys
     }
 
     /// Initial parser: handles normal text/control characters and discards CSI
@@ -154,15 +164,26 @@ impl ScreenBuffer {
                 _ => {}
             },
             AnsiState::Escape => {
-                self.ansi_state = if ch == '[' {
-                    AnsiState::Csi
+                if ch == '[' {
+                    self.csi_params.clear();
+                    self.ansi_state = AnsiState::Csi;
                 } else {
-                    AnsiState::Ground
-                };
+                    self.ansi_state = AnsiState::Ground;
+                }
             }
             AnsiState::Csi => {
                 if ('@'..='~').contains(&ch) {
+                    if self.csi_params == "?1" {
+                        match ch {
+                            'h' => self.application_cursor_keys = true,
+                            'l' => self.application_cursor_keys = false,
+                            _ => {}
+                        }
+                    }
+                    self.csi_params.clear();
                     self.ansi_state = AnsiState::Ground;
+                } else {
+                    self.csi_params.push(ch);
                 }
             }
         }
@@ -223,5 +244,20 @@ mod tests {
         assert_eq!(screen.lines()[0], "");
         screen.push_bytes(&thai[1..]);
         assert_eq!(screen.lines()[0], "ก");
+    }
+
+    #[test]
+    fn tracks_application_cursor_key_mode() {
+        let mut screen = ScreenBuffer::new(20, 2);
+        assert!(!screen.application_cursor_keys());
+
+        screen.push_bytes(b"\x1b[?1h");
+        assert!(screen.application_cursor_keys());
+
+        screen.resize(40, 4);
+        assert!(screen.application_cursor_keys());
+
+        screen.push_bytes(b"\x1b[?1l");
+        assert!(!screen.application_cursor_keys());
     }
 }
