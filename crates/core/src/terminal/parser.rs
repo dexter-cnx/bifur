@@ -65,14 +65,34 @@ impl ScreenBuffer {
         let mut replacement = Self::new(cols, rows);
         let copy_rows = self.rows.min(replacement.rows);
         let copy_cols = self.cols.min(replacement.cols);
-        for row in 0..copy_rows {
+        let source_row_start = if replacement.rows < self.rows {
+            self.rows - copy_rows
+        } else {
+            0
+        };
+        let target_row_start = if replacement.rows > self.rows {
+            replacement.rows - copy_rows
+        } else {
+            0
+        };
+
+        for row_offset in 0..copy_rows {
+            let source_row = source_row_start + row_offset;
+            let target_row = target_row_start + row_offset;
             for col in 0..copy_cols {
-                replacement.cells[row * replacement.cols + col] =
-                    self.cells[row * self.cols + col].clone();
+                replacement.cells[target_row * replacement.cols + col] =
+                    self.cells[source_row * self.cols + col].clone();
             }
         }
+
         replacement.cursor_col = self.cursor_col.min(replacement.cols - 1);
-        replacement.cursor_row = self.cursor_row.min(replacement.rows - 1);
+        replacement.cursor_row = if replacement.rows < self.rows {
+            self.cursor_row
+                .saturating_sub(source_row_start)
+                .min(replacement.rows - 1)
+        } else {
+            (target_row_start + self.cursor_row).min(replacement.rows - 1)
+        };
         replacement.ansi_state = self.ansi_state;
         replacement.csi_params = std::mem::take(&mut self.csi_params);
         replacement.application_cursor_keys = self.application_cursor_keys;
@@ -259,5 +279,25 @@ mod tests {
 
         screen.push_bytes(b"\x1b[?1l");
         assert!(!screen.application_cursor_keys());
+    }
+
+    #[test]
+    fn shrinking_keeps_recent_rows_and_cursor_region() {
+        let mut screen = ScreenBuffer::new(8, 4);
+        screen.push_bytes(b"one\ntwo\nthree\nfour");
+
+        screen.resize(8, 2);
+
+        assert_eq!(screen.lines(), vec!["three", "four"]);
+    }
+
+    #[test]
+    fn growing_keeps_recent_rows_bottom_aligned() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"one\ntwo");
+
+        screen.resize(8, 4);
+
+        assert_eq!(screen.lines(), vec!["", "", "one", "two"]);
     }
 }
