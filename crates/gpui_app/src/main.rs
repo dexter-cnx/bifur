@@ -2,7 +2,9 @@ mod terminal_view;
 
 use bifur_core::fs_model::PaneState;
 use bifur_core::terminal::{TerminalConfig, TerminalSession};
+use gpui::prelude::*;
 use gpui::*;
+use gpui_platform::application;
 use std::path::PathBuf;
 use terminal_view::TerminalView;
 
@@ -223,6 +225,12 @@ impl BifurApp {
         label: &str,
     ) -> Div {
         let selected = pane.selected;
+        let scroll_id = if label == "LEFT" {
+            "left-pane-scroll"
+        } else {
+            "right-pane-scroll"
+        };
+
         div()
             .flex_1()
             .flex()
@@ -251,8 +259,9 @@ impl BifurApp {
             )
             .child(
                 div()
+                    .id(scroll_id)
                     .flex_1()
-                    .overflow_y_scroll()
+                    .overflow_scroll()
                     .track_scroll(scroll)
                     .children(pane.entries.iter().enumerate().map(|(index, entry)| {
                         let is_selected = index == selected;
@@ -389,13 +398,16 @@ impl Render for BifurApp {
 }
 
 fn main() {
-    App::new().run(|cx: &mut App| {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    application().run(|cx: &mut App| {
+        let home = dirs::home_dir()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
         cx.open_window(WindowOptions::default(), |window, cx| {
             let app = cx.new(|cx| BifurApp::new(home, cx));
             app.focus_handle(cx).focus(window, cx);
             app
         })
         .expect("open BIFUR window");
+        cx.activate(true);
     });
 }

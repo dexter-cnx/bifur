@@ -37,44 +37,26 @@ Delivered:
 
 ## M1 status
 
-The first M1 slice was merged through PR #2.
+PR #2 delivered keyboard dual-pane navigation and terminal cwd synchronization.
 
-Delivered:
+PR #3 delivered terminal input mode:
 
-### Core
-
-- `PaneState::select_next()`
-- `PaneState::select_previous()`
-- `enter() -> bool`
-- `up() -> bool`
-- selection-boundary unit test
-
-### GPUI
-
-- root `FocusHandle`
-- root keyboard event handling
-- `Tab` switches active pane
-- `Up/Down` and `j/k` move selection
-- `Enter` opens the selected directory
-- `Backspace` moves to the parent directory
-- keyboard navigation reveals the selected row using `ScrollHandle`
-- all pane/cwd transitions funnel through `sync_terminal_cwd()`
-- active pane changes call `TerminalSession::set_cwd()`
-- terminal cwd sync errors are surfaced instead of silently diverging
+- `F6` toggles pane-vs-terminal input
+- Enter, Backspace, Tab, Escape, arrows, Space, and printable text forward to `TerminalSession::send_input()`
+- printable input uses GPUI `key_char`, preserving shifted characters and non-US keyboard layouts
+- terminal input errors surface in the GPUI status strip
 
 ## Current M1 branch
 
-Branch: `feature/m1-terminal-input`
+Branch: `feature/m1-terminal-repaint`
 
-Implemented in this slice:
+Current hardening slice:
 
-- explicit pane-vs-terminal input mode
-- `F6` toggles terminal input mode
-- terminal-focused Enter, Backspace, Tab, Escape, arrows, Space, and single-character keys forward to `TerminalSession::send_input()`
-- terminal input failures surface in the GPUI status strip
-- terminal panel visually indicates terminal input mode
+- CI now compiles `bifur` GPUI frontend instead of validating only `bifur-core`
+- CI also compiles `bifur-bridge`
+- Windows terminal shell selection checks `SHELL`, then `COMSPEC`, then falls back to `pwsh.exe`
 
-Modifier-aware terminal control sequences (for example Ctrl+C) are intentionally deferred until the input mapping is modeled explicitly rather than guessed from display strings.
+This slice intentionally makes frontend/bridge compile failures visible before deeper PTY repaint and resize work lands.
 
 ## M1 remaining work
 
@@ -87,7 +69,7 @@ Modifier-aware terminal control sequences (for example Ctrl+C) are intentionally
 
 ## Current limitations
 
-- terminal accepts the initial unmodified key set, but Ctrl/Alt combinations are not forwarded yet
+- Ctrl/Alt terminal combinations are not forwarded yet
 - PTY output does not yet trigger event-driven repaint
 - terminal resize is not connected to GPUI bounds
 - file watching is not wired
@@ -99,10 +81,11 @@ Modifier-aware terminal control sequences (for example Ctrl+C) are intentionally
 ```bash
 cargo fmt --all -- --check
 cargo test -p bifur-core
-cargo check --workspace
+cargo check -p bifur
+cargo check -p bifur-bridge
 ```
 
-Format before every push. If GPUI upstream breaks, isolate the frontend failure and keep `bifur-core` green.
+Format before every push. CI must compile all touched runtime boundaries, not only core.
 
 ## Definition of done for M1
 

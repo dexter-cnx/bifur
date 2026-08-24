@@ -171,9 +171,47 @@ impl Drop for TerminalSession {
 }
 
 fn default_shell() -> String {
-    if cfg!(windows) {
-        std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".into())
-    } else {
+    #[cfg(windows)]
+    {
+        if let Some(shell) = std::env::var("SHELL")
+            .ok()
+            .filter(|shell| is_native_windows_shell_candidate(shell))
+        {
+            return shell;
+        }
+
+        return std::env::var("COMSPEC")
+            .ok()
+            .filter(|shell| !shell.trim().is_empty())
+            .unwrap_or_else(|| "powershell.exe".into());
+    }
+
+    #[cfg(not(windows))]
+    {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())
+    }
+}
+
+fn is_native_windows_shell_candidate(shell: &str) -> bool {
+    let shell = shell.trim();
+    !shell.is_empty() && !shell.starts_with('/')
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::is_native_windows_shell_candidate;
+
+    #[test]
+    fn rejects_msys_posix_shell_paths_for_native_windows_spawn() {
+        assert!(!is_native_windows_shell_candidate("/usr/bin/bash"));
+        assert!(!is_native_windows_shell_candidate("/bin/zsh"));
+    }
+
+    #[test]
+    fn accepts_native_windows_shell_names_and_paths() {
+        assert!(is_native_windows_shell_candidate("bash.exe"));
+        assert!(is_native_windows_shell_candidate(
+            r"C:\Program Files\Git\bin\bash.exe"
+        ));
     }
 }

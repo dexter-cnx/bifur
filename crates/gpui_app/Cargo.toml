@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 bifur-core = { path = "../core" }
 gpui = { workspace = true }
+gpui_platform = { workspace = true }
 dirs = { workspace = true }
