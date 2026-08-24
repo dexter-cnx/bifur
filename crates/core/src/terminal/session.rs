@@ -5,7 +5,10 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     path::PathBuf,
-    sync::{Arc, RwLock},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Arc, RwLock,
+    },
     thread::{self, JoinHandle},
 };
 
@@ -30,6 +33,11 @@ impl Default for TerminalConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalEvent {
+    OutputReady,
+}
+
 /// Pure-Rust terminal owner. Frontends only send input/resize/cwd events and
 /// render `screen_snapshot()`; they never own or read the PTY directly.
 pub struct TerminalSession {
@@ -39,6 +47,7 @@ pub struct TerminalSession {
     writer: Box<dyn Write + Send>,
     screen: Arc<RwLock<ScreenBuffer>>,
     history: Arc<RwLock<Vec<CommandBlock>>>,
+    event_rx: Option<Receiver<TerminalEvent>>,
     reader_thread: Option<JoinHandle<()>>,
 }
 
@@ -75,21 +84,8 @@ impl TerminalSession {
             config.rows as usize,
         )));
         let reader_screen = Arc::clone(&screen);
-        let reader_thread = thread::Builder::new()
-            .name("bifur-terminal-reader".into())
-            .spawn(move || {
-                let mut bytes = [0_u8; 8192];
-                loop {
-                    match reader.read(&mut bytes) {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => {
-                            if let Ok(mut screen) = reader_screen.write() {
-                                screen.push_bytes(&bytes[..read]);
-                            }
-                        }
-                    }
-                }
-            })
+        let (event_tx, event_rx) = mpsc::channel();
+        let reader_thread = spawn_reader_thread(reader, reader_screen, event_tx)
             .context("spawn terminal reader thread")?;
 
         Ok(Self {
@@ -99,6 +95,7 @@ impl TerminalSession {
             writer,
             screen,
             history: Arc::new(RwLock::new(Vec::new())),
+            event_rx: Some(event_rx),
             reader_thread: Some(reader_thread),
         })
     }
@@ -145,6 +142,14 @@ impl TerminalSession {
             })
     }
 
+    /// Transfers the terminal output event receiver to the frontend.
+    ///
+    /// The receiver is intentionally single-consumer: one frontend owns repaint
+    /// scheduling while `TerminalSession` continues to own PTY bytes and parser state.
+    pub fn take_event_receiver(&mut self) -> Option<Receiver<TerminalEvent>> {
+        self.event_rx.take()
+    }
+
     pub fn command_history(&self) -> Vec<CommandBlock> {
         self.history
             .read()
@@ -170,6 +175,31 @@ impl Drop for TerminalSession {
     }
 }
 
+fn spawn_reader_thread(
+    mut reader: Box<dyn Read + Send>,
+    screen: Arc<RwLock<ScreenBuffer>>,
+    event_tx: Sender<TerminalEvent>,
+) -> Result<JoinHandle<()>> {
+    Ok(thread::Builder::new()
+        .name("bifur-terminal-reader".into())
+        .spawn(move || {
+            let mut bytes = [0_u8; 8192];
+            loop {
+                match reader.read(&mut bytes) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => {
+                        if let Ok(mut screen) = screen.write() {
+                            screen.push_bytes(&bytes[..read]);
+                        }
+                        if event_tx.send(TerminalEvent::OutputReady).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        })?)
+}
+
 fn default_shell() -> String {
     #[cfg(windows)]
     {
@@ -192,6 +222,7 @@ fn default_shell() -> String {
     }
 }
 
+#[cfg(any(windows, test))]
 fn is_native_windows_shell_candidate(shell: &str) -> bool {
     let shell = shell.trim();
     !shell.is_empty() && !shell.starts_with('/')
