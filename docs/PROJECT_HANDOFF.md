@@ -35,11 +35,11 @@ Delivered:
 - incremental UTF-8 handling across PTY reads
 - code walkthrough + handoff + CI
 
-## M1 current branch
+## M1 status
 
-Branch: `feature/m1-interactive-dual-pane`
+The first M1 slice was merged through PR #2.
 
-Implemented in the first M1 slice:
+Delivered:
 
 ### Core
 
@@ -57,22 +57,37 @@ Implemented in the first M1 slice:
 - `Up/Down` and `j/k` move selection
 - `Enter` opens the selected directory
 - `Backspace` moves to the parent directory
+- keyboard navigation reveals the selected row using `ScrollHandle`
 - all pane/cwd transitions funnel through `sync_terminal_cwd()`
 - active pane changes call `TerminalSession::set_cwd()`
+- terminal cwd sync errors are surfaced instead of silently diverging
+
+## Current M1 branch
+
+Branch: `feature/m1-terminal-input`
+
+Implemented in this slice:
+
+- explicit pane-vs-terminal input mode
+- `F6` toggles terminal input mode
+- terminal-focused Enter, Backspace, Tab, Escape, arrows, Space, and single-character keys forward to `TerminalSession::send_input()`
+- terminal input failures surface in the GPUI status strip
+- terminal panel visually indicates terminal input mode
+
+Modifier-aware terminal control sequences (for example Ctrl+C) are intentionally deferred until the input mapping is modeled explicitly rather than guessed from display strings.
 
 ## M1 remaining work
 
-1. Add explicit terminal-vs-pane focus mode.
-2. Forward terminal-focused key input to `TerminalSession::send_input()`.
-3. Add event-driven GPUI invalidation when the PTY reader updates `ScreenBuffer`.
-4. Resize PTY/`ScreenBuffer` from terminal view bounds.
-5. Wire `notify` to pane refresh without blocking render.
-6. Expand parser toward VT100/xterm semantics while preserving `ScreenBuffer` API.
-7. Pin a known-good GPUI revision once macOS validation is complete.
+1. Add modifier-aware terminal input mapping, including Ctrl/Alt combinations.
+2. Add event-driven GPUI invalidation when the PTY reader updates `ScreenBuffer`.
+3. Resize PTY/`ScreenBuffer` from terminal view bounds.
+4. Wire `notify` to pane refresh without blocking render.
+5. Expand parser toward VT100/xterm semantics while preserving `ScreenBuffer` API.
+6. Pin a known-good GPUI revision once macOS validation is complete.
 
 ## Current limitations
 
-- terminal is rendered but does not yet accept GPUI keyboard input
+- terminal accepts the initial unmodified key set, but Ctrl/Alt combinations are not forwarded yet
 - PTY output does not yet trigger event-driven repaint
 - terminal resize is not connected to GPUI bounds
 - file watching is not wired
