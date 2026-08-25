@@ -312,7 +312,13 @@ impl ScreenBuffer {
         } else {
             self.csi_params
                 .split(';')
-                .map(|value| value.parse::<usize>().unwrap_or(usize::MAX))
+                .map(|value| {
+                    if value.is_empty() {
+                        0
+                    } else {
+                        value.parse::<usize>().unwrap_or(usize::MAX)
+                    }
+                })
                 .collect()
         };
 
@@ -450,6 +456,17 @@ mod tests {
         assert_eq!(screen.cells[0].bg, ANSI_BRIGHT_COLORS[4]);
         assert_eq!(screen.cells[1].fg, DEFAULT_FG);
         assert_eq!(screen.cells[1].bg, DEFAULT_BG);
+        assert!(!screen.cells[1].bold);
+    }
+
+    #[test]
+    fn omitted_sgr_params_apply_zero_reset_semantics() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[31;mX\x1b[1;;32mY");
+
+        assert_eq!(screen.cells[0].fg, DEFAULT_FG);
+        assert!(!screen.cells[0].bold);
+        assert_eq!(screen.cells[1].fg, ANSI_COLORS[2]);
         assert!(!screen.cells[1].bold);
     }
 
