@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+printf '%s\n' 'Running cargo fmt before push...'
+cargo fmt --all
+
+if ! git diff --quiet --; then
+  printf '%s\n' 'cargo fmt changed tracked files. Commit the formatting changes, then push again.' >&2
+  git --no-pager diff --stat >&2
+  exit 1
+fi
+
+printf '%s\n' 'Running preflight checks...'
+make preflight
