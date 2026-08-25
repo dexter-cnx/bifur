@@ -2,7 +2,7 @@ use crate::pane_watcher::{PaneSide, PaneWatcher};
 use bifur_core::fs_model::{FileEntry, PaneState};
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver},
+    sync::mpsc::{self, Receiver, Sender},
 };
 
 #[derive(Clone, Debug)]
@@ -46,6 +46,7 @@ impl PaneRefreshSnapshot {
 pub struct PaneRefreshCoordinator {
     left: PaneWatcher,
     right: PaneWatcher,
+    sender: Sender<PaneSide>,
     receiver: Option<Receiver<PaneSide>>,
 }
 
@@ -53,20 +54,28 @@ impl PaneRefreshCoordinator {
     pub fn new(left_path: &Path, right_path: &Path) -> notify::Result<Self> {
         let (sender, receiver) = mpsc::channel();
         let left = PaneWatcher::new(PaneSide::Left, left_path, sender.clone())?;
-        let right = PaneWatcher::new(PaneSide::Right, right_path, sender)?;
+        let right = PaneWatcher::new(PaneSide::Right, right_path, sender.clone())?;
 
         Ok(Self {
             left,
             right,
+            sender,
             receiver: Some(receiver),
         })
     }
 
     pub fn watch_path(&mut self, side: PaneSide, path: &Path) -> notify::Result<()> {
         match side {
-            PaneSide::Left => self.left.watch_path(path),
-            PaneSide::Right => self.right.watch_path(path),
+            PaneSide::Left => self.left.watch_path(path)?,
+            PaneSide::Right => self.right.watch_path(path)?,
         }
+
+        // The pane has already synchronously read the destination before this
+        // watch is installed. Queue one authoritative refresh after the new
+        // watch becomes active so changes made in that small gap cannot leave
+        // the pane stale until a later filesystem event.
+        let _ = self.sender.send(side);
+        Ok(())
     }
 
     pub fn take_receiver(&mut self) -> Option<Receiver<PaneSide>> {
