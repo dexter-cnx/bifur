@@ -1,4 +1,6 @@
-use bifur_core::terminal::{control_sequence, navigation_sequence, TerminalModifiers, TerminalNavigationKey};
+use bifur_core::terminal::{
+    control_sequence, navigation_sequence, TerminalModifiers, TerminalNavigationKey,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InputModifiers {
@@ -60,9 +62,7 @@ pub fn translate_terminal_key(
     }
 
     let produced = printable(key_char);
-    let is_altgr = modifiers.control
-        && modifiers.alt
-        && produced.is_some_and(|text| text != key);
+    let is_altgr = modifiers.control && modifiers.alt && produced.is_some_and(|text| text != key);
     if is_altgr {
         return produced.map(|text| text.as_bytes().to_vec());
     }
