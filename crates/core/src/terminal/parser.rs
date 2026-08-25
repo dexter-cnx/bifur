@@ -425,7 +425,7 @@ mod tests {
         screen.push_bytes(b"abcd\nefgh\nijkl\x1b[2;3H\x1b[J");
         assert_eq!(screen.lines(), vec!["abcd", "ef", ""]);
 
-        screen.push_bytes(b"\x1b[2;3HXY\x1b[2;4H\x1b[1J");
+        screen.push_bytes(b"\x1b[2;3HXY\x1b[2;3H\x1b[1J");
         assert_eq!(screen.lines(), vec!["", "   Y", ""]);
 
         screen.push_bytes(b"\x1b[2J");
