@@ -5,14 +5,15 @@ pub struct TerminalViewport {
 }
 
 impl TerminalViewport {
-    pub fn from_pixels(
-        width: f32,
-        height: f32,
-        cell_width: f32,
-        line_height: f32,
-    ) -> Self {
-        let cell_width = cell_width.max(f32::EPSILON);
-        let line_height = line_height.max(f32::EPSILON);
+    pub fn from_pixels(width: f32, height: f32, cell_width: f32, line_height: f32) -> Self {
+        if !cell_width.is_finite()
+            || !line_height.is_finite()
+            || cell_width <= 0.0
+            || line_height <= 0.0
+        {
+            return Self { cols: 1, rows: 1 };
+        }
+
         let cols = (width.max(cell_width) / cell_width)
             .floor()
             .clamp(1.0, u16::MAX as f32) as u16;
@@ -37,11 +38,28 @@ mod tests {
     }
 
     #[test]
-    fn clamps_tiny_or_invalid_metrics_to_at_least_one_cell() {
+    fn clamps_tiny_bounds_to_at_least_one_cell() {
         assert_eq!(
-            TerminalViewport::from_pixels(0.0, -1.0, 0.0, 0.0),
+            TerminalViewport::from_pixels(0.0, -1.0, 8.0, 16.0),
             TerminalViewport { cols: 1, rows: 1 }
         );
+    }
+
+    #[test]
+    fn rejects_nonpositive_or_nonfinite_cell_metrics() {
+        for (cell_width, line_height) in [
+            (0.0, 16.0),
+            (-8.0, 16.0),
+            (8.0, 0.0),
+            (8.0, -16.0),
+            (f32::NAN, 16.0),
+            (8.0, f32::INFINITY),
+        ] {
+            assert_eq!(
+                TerminalViewport::from_pixels(800.0, 600.0, cell_width, line_height),
+                TerminalViewport { cols: 1, rows: 1 }
+            );
+        }
     }
 
     #[test]
