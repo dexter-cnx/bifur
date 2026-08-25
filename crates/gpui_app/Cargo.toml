@@ -8,3 +8,4 @@ bifur-core = { path = "../core" }
 gpui = { workspace = true }
 gpui_platform = { workspace = true }
 dirs = { workspace = true }
+notify = { workspace = true }
