@@ -51,27 +51,6 @@ fn terminal_size_for_window(window: &Window) -> (u16, u16) {
     (cols, rows)
 }
 
-fn terminal_control_byte(key: &str) -> Option<u8> {
-    match key {
-        "space" | "@" => Some(0x00),
-        "[" => Some(0x1b),
-        "\\" => Some(0x1c),
-        "]" => Some(0x1d),
-        "^" => Some(0x1e),
-        "_" => Some(0x1f),
-        "?" => Some(0x7f),
-        _ if key.len() == 1 => {
-            let byte = key.as_bytes()[0];
-            if byte.is_ascii_alphabetic() {
-                Some(byte.to_ascii_uppercase() & 0x1f)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
 fn printable_key_char(keystroke: &Keystroke) -> Option<&str> {
     keystroke
         .key_char
@@ -176,13 +155,10 @@ fn terminal_key_bytes(keystroke: &Keystroke, application_cursor_keys: bool) -> O
     }
 
     if modifiers.control {
-        let control = terminal_control_byte(control_key_identity(keystroke))?;
-        let mut bytes = Vec::with_capacity(if modifiers.alt { 2 } else { 1 });
-        if modifiers.alt {
-            bytes.push(0x1b);
-        }
-        bytes.push(control);
-        return Some(bytes);
+        return bifur_core::terminal::control_sequence(
+            control_key_identity(keystroke),
+            modifiers.alt,
+        );
     }
 
     if !modifiers.modified() {
