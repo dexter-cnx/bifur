@@ -104,9 +104,10 @@ impl ScreenBuffer {
         self.application_cursor_keys
     }
 
-    /// Initial parser: handles normal text/control characters and discards CSI
-    /// control sequences so UI never sees raw escape bytes. A complete VT parser
-    /// can replace this without changing the public ScreenBuffer contract.
+    /// Initial parser: handles normal text/control characters and a small VT100
+    /// cursor subset while keeping raw escape bytes out of the visible surface.
+    /// A complete VT parser can replace this without changing the public
+    /// `ScreenBuffer` contract.
     ///
     /// PTY reads may split a multibyte UTF-8 code point. `utf8_pending` retains
     /// an incomplete trailing sequence until the next read instead of replacing
@@ -193,13 +194,7 @@ impl ScreenBuffer {
             }
             AnsiState::Csi => {
                 if ('@'..='~').contains(&ch) {
-                    if self.csi_params == "?1" {
-                        match ch {
-                            'h' => self.application_cursor_keys = true,
-                            'l' => self.application_cursor_keys = false,
-                            _ => {}
-                        }
-                    }
+                    self.handle_csi(ch);
                     self.csi_params.clear();
                     self.ansi_state = AnsiState::Ground;
                 } else {
@@ -207,6 +202,59 @@ impl ScreenBuffer {
                 }
             }
         }
+    }
+
+    fn handle_csi(&mut self, command: char) {
+        if self.csi_params == "?1" {
+            match command {
+                'h' => self.application_cursor_keys = true,
+                'l' => self.application_cursor_keys = false,
+                _ => {}
+            }
+            return;
+        }
+
+        match command {
+            'A' => {
+                let count = self.csi_single_param(1);
+                self.cursor_row = self.cursor_row.saturating_sub(count);
+            }
+            'B' => {
+                let count = self.csi_single_param(1);
+                self.cursor_row = self.cursor_row.saturating_add(count).min(self.rows - 1);
+            }
+            'C' => {
+                let count = self.csi_single_param(1);
+                self.cursor_col = self.cursor_col.saturating_add(count).min(self.cols - 1);
+            }
+            'D' => {
+                let count = self.csi_single_param(1);
+                self.cursor_col = self.cursor_col.saturating_sub(count);
+            }
+            'H' | 'f' => {
+                let mut params = self.csi_params.split(';');
+                let row = Self::csi_position_param(params.next()).saturating_sub(1);
+                let col = Self::csi_position_param(params.next()).saturating_sub(1);
+                self.cursor_row = row.min(self.rows - 1);
+                self.cursor_col = col.min(self.cols - 1);
+            }
+            _ => {}
+        }
+    }
+
+    fn csi_single_param(&self, default: usize) -> usize {
+        self.csi_params
+            .parse::<usize>()
+            .ok()
+            .filter(|value| *value > 0)
+            .unwrap_or(default)
+    }
+
+    fn csi_position_param(value: Option<&str>) -> usize {
+        value
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(1)
     }
 
     fn put_char(&mut self, ch: char) {
@@ -279,6 +327,29 @@ mod tests {
 
         screen.push_bytes(b"\x1b[?1l");
         assert!(!screen.application_cursor_keys());
+    }
+
+    #[test]
+    fn applies_relative_cursor_movement() {
+        let mut screen = ScreenBuffer::new(8, 3);
+        screen.push_bytes(b"abcd\x1b[2DXY");
+        assert_eq!(screen.lines()[0], "abXY");
+
+        screen.push_bytes(b"\x1b[2B\x1b[3CZ");
+        assert_eq!(screen.lines()[2], "     Z");
+
+        screen.push_bytes(b"\x1b[1A\x1b[4Dq");
+        assert_eq!(screen.lines()[1], " q");
+    }
+
+    #[test]
+    fn applies_absolute_cursor_position_with_vt_defaults() {
+        let mut screen = ScreenBuffer::new(8, 3);
+        screen.push_bytes(b"\x1b[2;4HX\x1b[;2fY\x1b[99;99HZ");
+
+        assert_eq!(screen.lines()[0], " Y");
+        assert_eq!(screen.lines()[1], "   X");
+        assert_eq!(screen.lines()[2], "       Z");
     }
 
     #[test]
