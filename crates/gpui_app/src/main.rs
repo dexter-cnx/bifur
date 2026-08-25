@@ -1,12 +1,12 @@
+mod input_policy;
 mod terminal_view;
 
 use bifur_core::fs_model::PaneState;
-use bifur_core::terminal::{
-    navigation_sequence, TerminalConfig, TerminalModifiers, TerminalNavigationKey, TerminalSession,
-};
+use bifur_core::terminal::{TerminalConfig, TerminalSession};
 use gpui::prelude::*;
 use gpui::*;
 use gpui_platform::application;
+use input_policy::{translate_terminal_key, InputModifiers};
 use std::path::PathBuf;
 use terminal_view::TerminalView;
 
@@ -51,135 +51,20 @@ fn terminal_size_for_window(window: &Window) -> (u16, u16) {
     (cols, rows)
 }
 
-fn printable_key_char(keystroke: &Keystroke) -> Option<&str> {
-    keystroke
-        .key_char
-        .as_deref()
-        .filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
-}
-
-fn is_altgr_printable(keystroke: &Keystroke) -> bool {
-    let modifiers = &keystroke.modifiers;
-    if !modifiers.control || !modifiers.alt || modifiers.platform || modifiers.function {
-        return false;
-    }
-
-    let Some(produced) = printable_key_char(keystroke) else {
-        return false;
-    };
-
-    // AltGr is typically surfaced by GPUI as Ctrl+Alt plus a produced printable
-    // character that differs from the underlying key (for example AltGr+Q -> @).
-    produced != keystroke.key
-}
-
-fn control_key_identity(keystroke: &Keystroke) -> &str {
-    if let Some(produced) = printable_key_char(keystroke) {
-        if matches!(produced, "@" | "[" | "\\" | "]" | "^" | "_" | "?") {
-            return produced;
-        }
-    }
-
-    keystroke.key.as_str()
-}
-
-fn alt_meta_text(keystroke: &Keystroke) -> Option<String> {
-    let produced = printable_key_char(keystroke)?;
-    if produced.is_ascii() {
-        return Some(produced.to_string());
-    }
-
-    // macOS Option may transform the produced glyph (Option+F -> ƒ). For
-    // terminal Meta input, prefer the underlying ASCII key and preserve Shift.
-    if keystroke.key.len() == 1 && keystroke.key.is_ascii() {
-        let mut key = keystroke.key.clone();
-        if keystroke.modifiers.shift {
-            key.make_ascii_uppercase();
-        }
-        return Some(key);
-    }
-
-    Some(produced.to_string())
-}
-
-fn terminal_navigation_key(key: &str) -> Option<TerminalNavigationKey> {
-    match key {
-        "up" => Some(TerminalNavigationKey::Up),
-        "down" => Some(TerminalNavigationKey::Down),
-        "right" => Some(TerminalNavigationKey::Right),
-        "left" => Some(TerminalNavigationKey::Left),
-        "home" => Some(TerminalNavigationKey::Home),
-        "end" => Some(TerminalNavigationKey::End),
-        "insert" => Some(TerminalNavigationKey::Insert),
-        "delete" => Some(TerminalNavigationKey::Delete),
-        "pageup" => Some(TerminalNavigationKey::PageUp),
-        "pagedown" => Some(TerminalNavigationKey::PageDown),
-        _ => None,
-    }
-}
-
 fn terminal_key_bytes(keystroke: &Keystroke, application_cursor_keys: bool) -> Option<Vec<u8>> {
     let modifiers = &keystroke.modifiers;
-    if modifiers.platform {
-        return None;
-    }
-
-    let navigation_key = terminal_navigation_key(keystroke.key.as_str());
-
-    // GPUI can surface Fn+Arrow/Delete as the translated navigation identity
-    // while retaining the function modifier. Treat Fn as a physical translation
-    // only when no terminal modifiers are present.
-    if modifiers.function {
-        if !modifiers.control && !modifiers.alt && !modifiers.shift {
-            return navigation_key.map(|key| {
-                navigation_sequence(key, application_cursor_keys, TerminalModifiers::default())
-            });
-        }
-        return None;
-    }
-
-    if is_altgr_printable(keystroke) {
-        return printable_key_char(keystroke).map(|text| text.as_bytes().to_vec());
-    }
-
-    if let Some(key) = navigation_key {
-        return Some(navigation_sequence(
-            key,
-            application_cursor_keys,
-            TerminalModifiers {
-                shift: modifiers.shift,
-                alt: modifiers.alt,
-                control: modifiers.control,
-            },
-        ));
-    }
-
-    if modifiers.control {
-        return bifur_core::terminal::control_sequence(
-            control_key_identity(keystroke),
-            modifiers.alt,
-        );
-    }
-
-    if !modifiers.modified() {
-        return match keystroke.key.as_str() {
-            "enter" => Some(b"\r".to_vec()),
-            "backspace" => Some(vec![0x7f]),
-            "tab" => Some(b"\t".to_vec()),
-            "escape" => Some(vec![0x1b]),
-            _ => printable_key_char(keystroke).map(|text| text.as_bytes().to_vec()),
-        };
-    }
-
-    if modifiers.alt {
-        let text = alt_meta_text(keystroke)?;
-        let mut bytes = Vec::with_capacity(1 + text.len());
-        bytes.push(0x1b);
-        bytes.extend_from_slice(text.as_bytes());
-        return Some(bytes);
-    }
-
-    printable_key_char(keystroke).map(|text| text.as_bytes().to_vec())
+    translate_terminal_key(
+        keystroke.key.as_str(),
+        keystroke.key_char.as_deref(),
+        InputModifiers {
+            shift: modifiers.shift,
+            alt: modifiers.alt,
+            control: modifiers.control,
+            platform: modifiers.platform,
+            function: modifiers.function,
+        },
+        application_cursor_keys,
+    )
 }
 
 impl BifurApp {
