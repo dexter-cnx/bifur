@@ -8,6 +8,7 @@ const ANSI_COLORS: [u32; 8] = [
 const ANSI_BRIGHT_COLORS: [u32; 8] = [
     0x7F7F7F, 0xFF0000, 0x00FF00, 0xFFFF00, 0x5C5CFF, 0xFF00FF, 0x00FFFF, 0xFFFFFF,
 ];
+const COLOR_CUBE_LEVELS: [u32; 6] = [0, 95, 135, 175, 215, 255];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
@@ -368,24 +369,117 @@ impl ScreenBuffer {
                 .collect()
         };
 
-        for param in params {
+        let mut index = 0;
+        while index < params.len() {
+            let param = params[index];
             match param {
                 0 => {
                     self.current_fg = DEFAULT_FG;
                     self.current_bg = DEFAULT_BG;
                     self.current_bold = false;
+                    index += 1;
                 }
-                1 => self.current_bold = true,
-                22 => self.current_bold = false,
-                30..=37 => self.current_fg = ANSI_COLORS[param - 30],
-                39 => self.current_fg = DEFAULT_FG,
-                40..=47 => self.current_bg = ANSI_COLORS[param - 40],
-                49 => self.current_bg = DEFAULT_BG,
-                90..=97 => self.current_fg = ANSI_BRIGHT_COLORS[param - 90],
-                100..=107 => self.current_bg = ANSI_BRIGHT_COLORS[param - 100],
-                _ => {}
+                1 => {
+                    self.current_bold = true;
+                    index += 1;
+                }
+                22 => {
+                    self.current_bold = false;
+                    index += 1;
+                }
+                30..=37 => {
+                    self.current_fg = ANSI_COLORS[param - 30];
+                    index += 1;
+                }
+                38 => index += self.apply_extended_color(&params[index..], true),
+                39 => {
+                    self.current_fg = DEFAULT_FG;
+                    index += 1;
+                }
+                40..=47 => {
+                    self.current_bg = ANSI_COLORS[param - 40];
+                    index += 1;
+                }
+                48 => index += self.apply_extended_color(&params[index..], false),
+                49 => {
+                    self.current_bg = DEFAULT_BG;
+                    index += 1;
+                }
+                90..=97 => {
+                    self.current_fg = ANSI_BRIGHT_COLORS[param - 90];
+                    index += 1;
+                }
+                100..=107 => {
+                    self.current_bg = ANSI_BRIGHT_COLORS[param - 100];
+                    index += 1;
+                }
+                _ => index += 1,
             }
         }
+    }
+
+    fn apply_extended_color(&mut self, params: &[usize], foreground: bool) -> usize {
+        let Some(mode) = params.get(1).copied() else {
+            return 1;
+        };
+
+        match mode {
+            5 => {
+                let consumed = params.len().min(3);
+                if let Some(palette_index) = params.get(2).copied().filter(|value| *value <= 255) {
+                    self.set_sgr_color(foreground, Self::xterm_256_color(palette_index as u8));
+                }
+                consumed
+            }
+            2 => {
+                let consumed = params.len().min(5);
+                if params.len() >= 5 {
+                    let channels = [params[2], params[3], params[4]];
+                    if channels.iter().all(|value| *value <= 255) {
+                        self.set_sgr_color(
+                            foreground,
+                            Self::rgb_color(
+                                channels[0] as u8,
+                                channels[1] as u8,
+                                channels[2] as u8,
+                            ),
+                        );
+                    }
+                }
+                consumed
+            }
+            _ => 1,
+        }
+    }
+
+    fn set_sgr_color(&mut self, foreground: bool, color: u32) {
+        if foreground {
+            self.current_fg = color;
+        } else {
+            self.current_bg = color;
+        }
+    }
+
+    fn xterm_256_color(index: u8) -> u32 {
+        match index {
+            0..=7 => ANSI_COLORS[index as usize],
+            8..=15 => ANSI_BRIGHT_COLORS[index as usize - 8],
+            16..=231 => {
+                let offset = u32::from(index) - 16;
+                let red = COLOR_CUBE_LEVELS[(offset / 36) as usize];
+                let green = COLOR_CUBE_LEVELS[((offset % 36) / 6) as usize];
+                let blue = COLOR_CUBE_LEVELS[(offset % 6) as usize];
+                (red << 16) | (green << 8) | blue
+            }
+            232..=255 => {
+                let level = 8 + 10 * (u32::from(index) - 232);
+                (level << 16) | (level << 8) | level
+            }
+        }
+    }
+
+    fn rgb_color(red: u8, green: u8, blue: u8) -> u32 {
+        (u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue)
     }
 
     fn csi_single_param(&self, default: usize) -> usize {
@@ -512,6 +606,52 @@ mod tests {
         assert_eq!(screen.cells[1].fg, DEFAULT_FG);
         assert_eq!(screen.cells[1].bg, DEFAULT_BG);
         assert!(!screen.cells[1].bold);
+    }
+
+    #[test]
+    fn supports_xterm_256_color_foreground_and_background() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[38;5;196;48;5;25mX");
+
+        assert_eq!(screen.cells[0].fg, 0xFF0000);
+        assert_eq!(screen.cells[0].bg, 0x005FAF);
+    }
+
+    #[test]
+    fn supports_truecolor_foreground_and_background() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[38;2;12;34;56;48;2;200;150;100mX");
+
+        assert_eq!(screen.cells[0].fg, 0x0C2238);
+        assert_eq!(screen.cells[0].bg, 0xC89664);
+    }
+
+    #[test]
+    fn maps_xterm_grayscale_palette_entries() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[38;5;232mA\x1b[38;5;255mB");
+
+        assert_eq!(screen.cells[0].fg, 0x080808);
+        assert_eq!(screen.cells[1].fg, 0xEEEEEE);
+    }
+
+    #[test]
+    fn invalid_extended_colors_preserve_existing_rendition() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[31mA\x1b[38;5;999mB\x1b[38;2;999;0;0mC");
+
+        assert_eq!(screen.cells[0].fg, ANSI_COLORS[1]);
+        assert_eq!(screen.cells[1].fg, ANSI_COLORS[1]);
+        assert_eq!(screen.cells[2].fg, ANSI_COLORS[1]);
+    }
+
+    #[test]
+    fn incomplete_extended_color_does_not_reinterpret_payload_as_sgr() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[31;1mA\x1b[38;2;255;0mB");
+
+        assert_eq!(screen.cells[1].fg, ANSI_COLORS[1]);
+        assert!(screen.cells[1].bold);
     }
 
     #[test]
