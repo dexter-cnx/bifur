@@ -17,11 +17,12 @@ pub struct PaneWatcher {
 
 impl PaneWatcher {
     pub fn new(side: PaneSide, path: &Path, sender: Sender<PaneSide>) -> notify::Result<Self> {
-        let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-            if result.is_ok() {
-                let _ = sender.send(side);
-            }
-        })?;
+        let mut watcher =
+            notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+                if result.is_ok() {
+                    let _ = sender.send(side);
+                }
+            })?;
         watcher.watch(path, RecursiveMode::NonRecursive)?;
 
         Ok(Self {
