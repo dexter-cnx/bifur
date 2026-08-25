@@ -28,6 +28,27 @@ enum ActiveSide {
     Right,
 }
 
+const TERMINAL_PANEL_WIDTH_PX: f32 = 320.0;
+const TERMINAL_HORIZONTAL_CHROME_PX: f32 = 56.0;
+const TERMINAL_VERTICAL_CHROME_PX: f32 = 144.0;
+const TERMINAL_CELL_WIDTH_PX: f32 = 7.0;
+const TERMINAL_LINE_HEIGHT_PX: f32 = 16.0;
+
+fn terminal_size_for_window(window: &Window) -> (u16, u16) {
+    let size = window.bounds().size;
+    let usable_width =
+        (TERMINAL_PANEL_WIDTH_PX - TERMINAL_HORIZONTAL_CHROME_PX).max(TERMINAL_CELL_WIDTH_PX);
+    let usable_height =
+        (f32::from(size.height) - TERMINAL_VERTICAL_CHROME_PX).max(TERMINAL_LINE_HEIGHT_PX);
+    let cols = (usable_width / TERMINAL_CELL_WIDTH_PX)
+        .floor()
+        .clamp(1.0, u16::MAX as f32) as u16;
+    let rows = (usable_height / TERMINAL_LINE_HEIGHT_PX)
+        .floor()
+        .clamp(1.0, u16::MAX as f32) as u16;
+    (cols, rows)
+}
+
 fn terminal_control_byte(key: &str) -> Option<u8> {
     match key {
         "space" | "@" => Some(0x00),
@@ -180,9 +201,12 @@ fn terminal_key_bytes(keystroke: &Keystroke, application_cursor_keys: bool) -> O
 }
 
 impl BifurApp {
-    fn new(home: PathBuf, cx: &mut Context<Self>) -> Self {
+    fn new(home: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let (cols, rows) = terminal_size_for_window(window);
         let mut terminal = TerminalSession::spawn(TerminalConfig {
             cwd: home.clone(),
+            cols,
+            rows,
             ..TerminalConfig::default()
         })
         .ok();
@@ -212,6 +236,12 @@ impl BifurApp {
                     }
                 })
             });
+
+        cx.observe_window_bounds(window, |this, window, cx| {
+            this.sync_terminal_size(window);
+            cx.notify();
+        })
+        .detach();
 
         Self {
             left: PaneState::new(home.clone()),
@@ -252,6 +282,21 @@ impl BifurApp {
     fn reveal_selection(&self) {
         self.active_scroll()
             .scroll_to_item(self.active_pane().selected);
+    }
+
+    fn sync_terminal_size(&mut self, window: &Window) {
+        let (cols, rows) = terminal_size_for_window(window);
+        let Some(terminal) = &mut self.terminal else {
+            return;
+        };
+        if terminal.config.cols == cols && terminal.config.rows == rows {
+            return;
+        }
+
+        self.terminal_status = terminal
+            .resize(cols, rows)
+            .err()
+            .map(|error| format!("Terminal resize failed: {error}"));
     }
 
     fn sync_terminal_cwd(&mut self) {
@@ -555,7 +600,7 @@ fn main() {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default();
         cx.open_window(WindowOptions::default(), |window, cx| {
-            let app = cx.new(|cx| BifurApp::new(home, cx));
+            let app = cx.new(|cx| BifurApp::new(home, window, cx));
             app.focus_handle(cx).focus(window, cx);
             app
         })
