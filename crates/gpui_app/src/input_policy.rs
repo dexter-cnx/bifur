@@ -46,10 +46,6 @@ fn control_identity<'a>(key: &'a str, key_char: Option<&'a str>) -> &'a str {
     key
 }
 
-fn is_ascii_letter_key(key: &str) -> bool {
-    key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic()
-}
-
 fn alt_meta_text(key: &str, key_char: Option<&str>, shift: bool) -> Option<String> {
     let produced = printable(key_char)?;
     if produced.is_ascii() {
@@ -91,7 +87,6 @@ pub fn translate_terminal_key(
     let produced = printable(key_char);
     let is_altgr = modifiers.control
         && modifiers.alt
-        && is_ascii_letter_key(key)
         && produced.is_some_and(|text| text != key);
     if is_altgr {
         return produced.map(|text| text.as_bytes().to_vec());
@@ -143,6 +138,23 @@ mod tests {
         assert_eq!(
             translate_terminal_key(
                 "q",
+                Some("@"),
+                InputModifiers {
+                    control: true,
+                    alt: true,
+                    ..InputModifiers::default()
+                },
+                false,
+            ),
+            Some(b"@".to_vec())
+        );
+    }
+
+    #[test]
+    fn preserves_altgr_symbols_from_non_letter_keys() {
+        assert_eq!(
+            translate_terminal_key(
+                "2",
                 Some("@"),
                 InputModifiers {
                     control: true,
@@ -226,7 +238,7 @@ mod tests {
     fn forwards_control_punctuation_and_alt_prefix() {
         assert_eq!(
             translate_terminal_key(
-                "2",
+                "@",
                 Some("@"),
                 InputModifiers {
                     control: true,
