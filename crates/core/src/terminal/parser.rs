@@ -1,5 +1,14 @@
 use std::fmt::Write as _;
 
+const DEFAULT_FG: u32 = 0xE0E0E0;
+const DEFAULT_BG: u32 = 0x121212;
+const ANSI_COLORS: [u32; 8] = [
+    0x000000, 0xCD0000, 0x00CD00, 0xCDCD00, 0x0000EE, 0xCD00CD, 0x00CDCD, 0xE5E5E5,
+];
+const ANSI_BRIGHT_COLORS: [u32; 8] = [
+    0x7F7F7F, 0xFF0000, 0x00FF00, 0xFFFF00, 0x5C5CFF, 0xFF00FF, 0x00FFFF, 0xFFFFFF,
+];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
     pub ch: char,
@@ -12,11 +21,20 @@ impl Default for Cell {
     fn default() -> Self {
         Self {
             ch: ' ',
-            fg: 0xE0E0E0,
-            bg: 0x121212,
+            fg: DEFAULT_FG,
+            bg: DEFAULT_BG,
             bold: false,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SavedCursorState {
+    row: usize,
+    col: usize,
+    fg: u32,
+    bg: u32,
+    bold: bool,
 }
 
 /// UI-neutral terminal surface.
@@ -31,6 +49,10 @@ pub struct ScreenBuffer {
     cursor_col: usize,
     cursor_row: usize,
     saved_cursor: Option<(usize, usize)>,
+    saved_legacy_cursor: Option<SavedCursorState>,
+    current_fg: u32,
+    current_bg: u32,
+    current_bold: bool,
     ansi_state: AnsiState,
     csi_params: String,
     application_cursor_keys: bool,
@@ -56,6 +78,10 @@ impl ScreenBuffer {
             cursor_col: 0,
             cursor_row: 0,
             saved_cursor: None,
+            saved_legacy_cursor: None,
+            current_fg: DEFAULT_FG,
+            current_bg: DEFAULT_BG,
+            current_bold: false,
             ansi_state: AnsiState::Ground,
             csi_params: String::new(),
             application_cursor_keys: false,
@@ -104,6 +130,24 @@ impl ScreenBuffer {
             };
             (row, col.min(replacement.cols - 1))
         });
+        replacement.saved_legacy_cursor = self.saved_legacy_cursor.map(|saved| {
+            let row = if replacement.rows < self.rows {
+                saved
+                    .row
+                    .saturating_sub(source_row_start)
+                    .min(replacement.rows - 1)
+            } else {
+                (target_row_start + saved.row).min(replacement.rows - 1)
+            };
+            SavedCursorState {
+                row,
+                col: saved.col.min(replacement.cols - 1),
+                ..saved
+            }
+        });
+        replacement.current_fg = self.current_fg;
+        replacement.current_bg = self.current_bg;
+        replacement.current_bold = self.current_bold;
         replacement.ansi_state = self.ansi_state;
         replacement.csi_params = std::mem::take(&mut self.csi_params);
         replacement.application_cursor_keys = self.application_cursor_keys;
@@ -116,7 +160,7 @@ impl ScreenBuffer {
     }
 
     /// Initial parser: handles normal text/control characters and a small VT100
-    /// cursor/erase/save-restore subset while keeping raw escape bytes out of
+    /// cursor/erase/save-restore/SGR subset while keeping raw escape bytes out of
     /// the visible surface. A complete VT parser can replace this without
     /// changing the public `ScreenBuffer` contract.
     ///
@@ -202,8 +246,8 @@ impl ScreenBuffer {
                         self.ansi_state = AnsiState::Csi;
                         return;
                     }
-                    '7' => self.save_cursor(),
-                    '8' => self.restore_cursor(),
+                    '7' => self.save_legacy_cursor(),
+                    '8' => self.restore_legacy_cursor(),
                     _ => {}
                 }
                 self.ansi_state = AnsiState::Ground;
@@ -266,6 +310,7 @@ impl ScreenBuffer {
                 self.normalize_pending_wrap();
                 self.erase_line(self.csi_erase_mode());
             }
+            'm' => self.apply_sgr(),
             's' if self.csi_params.is_empty() => self.save_cursor(),
             'u' if self.csi_params.is_empty() => self.restore_cursor(),
             _ => {}
@@ -284,6 +329,62 @@ impl ScreenBuffer {
         if let Some((row, col)) = self.saved_cursor {
             self.cursor_row = row.min(self.rows - 1);
             self.cursor_col = col.min(self.cols - 1);
+        }
+    }
+
+    fn save_legacy_cursor(&mut self) {
+        self.saved_legacy_cursor = Some(SavedCursorState {
+            row: self.cursor_row,
+            col: self.cursor_col.min(self.cols - 1),
+            fg: self.current_fg,
+            bg: self.current_bg,
+            bold: self.current_bold,
+        });
+    }
+
+    fn restore_legacy_cursor(&mut self) {
+        if let Some(saved) = self.saved_legacy_cursor {
+            self.cursor_row = saved.row.min(self.rows - 1);
+            self.cursor_col = saved.col.min(self.cols - 1);
+            self.current_fg = saved.fg;
+            self.current_bg = saved.bg;
+            self.current_bold = saved.bold;
+        }
+    }
+
+    fn apply_sgr(&mut self) {
+        let params: Vec<usize> = if self.csi_params.is_empty() {
+            vec![0]
+        } else {
+            self.csi_params
+                .split(';')
+                .map(|value| {
+                    if value.is_empty() {
+                        0
+                    } else {
+                        value.parse::<usize>().unwrap_or(usize::MAX)
+                    }
+                })
+                .collect()
+        };
+
+        for param in params {
+            match param {
+                0 => {
+                    self.current_fg = DEFAULT_FG;
+                    self.current_bg = DEFAULT_BG;
+                    self.current_bold = false;
+                }
+                1 => self.current_bold = true,
+                22 => self.current_bold = false,
+                30..=37 => self.current_fg = ANSI_COLORS[param - 30],
+                39 => self.current_fg = DEFAULT_FG,
+                40..=47 => self.current_bg = ANSI_COLORS[param - 40],
+                49 => self.current_bg = DEFAULT_BG,
+                90..=97 => self.current_fg = ANSI_BRIGHT_COLORS[param - 90],
+                100..=107 => self.current_bg = ANSI_BRIGHT_COLORS[param - 100],
+                _ => {}
+            }
         }
     }
 
@@ -310,12 +411,20 @@ impl ScreenBuffer {
         }
     }
 
+    fn erase_cell(&self) -> Cell {
+        Cell {
+            bg: self.current_bg,
+            ..Cell::default()
+        }
+    }
+
     fn erase_display(&mut self, mode: usize) {
         let cursor = self.cursor_row * self.cols + self.cursor_col;
+        let erased = self.erase_cell();
         match mode {
-            0 => self.cells[cursor..].fill(Cell::default()),
-            1 => self.cells[..=cursor].fill(Cell::default()),
-            2 => self.cells.fill(Cell::default()),
+            0 => self.cells[cursor..].fill(erased),
+            1 => self.cells[..=cursor].fill(erased),
+            2 => self.cells.fill(erased),
             _ => {}
         }
     }
@@ -324,10 +433,11 @@ impl ScreenBuffer {
         let row_start = self.cursor_row * self.cols;
         let cursor = row_start + self.cursor_col;
         let row_end = row_start + self.cols;
+        let erased = self.erase_cell();
         match mode {
-            0 => self.cells[cursor..row_end].fill(Cell::default()),
-            1 => self.cells[row_start..=cursor].fill(Cell::default()),
-            2 => self.cells[row_start..row_end].fill(Cell::default()),
+            0 => self.cells[cursor..row_end].fill(erased),
+            1 => self.cells[row_start..=cursor].fill(erased),
+            2 => self.cells[row_start..row_end].fill(erased),
             _ => {}
         }
     }
@@ -337,7 +447,12 @@ impl ScreenBuffer {
             self.newline();
         }
         let index = self.cursor_row * self.cols + self.cursor_col;
-        self.cells[index].ch = ch;
+        self.cells[index] = Cell {
+            ch,
+            fg: self.current_fg,
+            bg: self.current_bg,
+            bold: self.current_bold,
+        };
         self.cursor_col += 1;
     }
 
@@ -363,13 +478,94 @@ impl ScreenBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::ScreenBuffer;
+    use super::{ScreenBuffer, ANSI_BRIGHT_COLORS, ANSI_COLORS, DEFAULT_BG, DEFAULT_FG};
 
     #[test]
     fn writes_and_scrolls_text() {
         let mut screen = ScreenBuffer::new(4, 2);
         screen.push_bytes(b"one\ntwo\nthr");
         assert_eq!(screen.lines(), vec!["two", "thr"]);
+    }
+
+    #[test]
+    fn applies_basic_sgr_rendition_to_written_cells() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[1;31;44mX\x1b[22;39;49mY");
+
+        assert_eq!(screen.cells[0].ch, 'X');
+        assert!(screen.cells[0].bold);
+        assert_eq!(screen.cells[0].fg, ANSI_COLORS[1]);
+        assert_eq!(screen.cells[0].bg, ANSI_COLORS[4]);
+        assert_eq!(screen.cells[1].ch, 'Y');
+        assert!(!screen.cells[1].bold);
+        assert_eq!(screen.cells[1].fg, DEFAULT_FG);
+        assert_eq!(screen.cells[1].bg, DEFAULT_BG);
+    }
+
+    #[test]
+    fn supports_bright_sgr_colors_and_full_reset() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[93;104mA\x1b[mB");
+
+        assert_eq!(screen.cells[0].fg, ANSI_BRIGHT_COLORS[3]);
+        assert_eq!(screen.cells[0].bg, ANSI_BRIGHT_COLORS[4]);
+        assert_eq!(screen.cells[1].fg, DEFAULT_FG);
+        assert_eq!(screen.cells[1].bg, DEFAULT_BG);
+        assert!(!screen.cells[1].bold);
+    }
+
+    #[test]
+    fn omitted_sgr_params_apply_zero_reset_semantics() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[31;mX\x1b[1;;32mY");
+
+        assert_eq!(screen.cells[0].fg, DEFAULT_FG);
+        assert!(!screen.cells[0].bold);
+        assert_eq!(screen.cells[1].fg, ANSI_COLORS[2]);
+        assert!(!screen.cells[1].bold);
+    }
+
+    #[test]
+    fn legacy_cursor_restore_restores_saved_rendition() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[31;1m\x1b7\x1b[34;22m\x1b8X");
+
+        assert_eq!(screen.cells[0].fg, ANSI_COLORS[1]);
+        assert!(screen.cells[0].bold);
+    }
+
+    #[test]
+    fn erase_uses_active_background_color() {
+        let mut screen = ScreenBuffer::new(4, 2);
+        screen.push_bytes(b"abcd\x1b[44m\x1b[2J");
+
+        assert!(screen.cells.iter().all(|cell| cell.ch == ' '));
+        assert!(screen.cells.iter().all(|cell| cell.bg == ANSI_COLORS[4]));
+    }
+
+    #[test]
+    fn sgr_state_survives_resize() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[1;32mA");
+        screen.resize(10, 3);
+        screen.push_bytes(b"B");
+
+        let b = screen
+            .cells
+            .iter()
+            .find(|cell| cell.ch == 'B')
+            .expect("B should be present after resize");
+        assert!(b.bold);
+        assert_eq!(b.fg, ANSI_COLORS[2]);
+    }
+
+    #[test]
+    fn unknown_sgr_params_do_not_destroy_known_state() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[31mA\x1b[999mB");
+
+        assert_eq!(screen.cells[0].fg, ANSI_COLORS[1]);
+        assert_eq!(screen.cells[1].fg, ANSI_COLORS[1]);
     }
 
     #[test]
