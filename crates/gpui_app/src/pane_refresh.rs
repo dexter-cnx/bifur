@@ -5,6 +5,8 @@ use std::{
     sync::mpsc::{self, Receiver, RecvError, Sender, TryRecvError},
 };
 
+const MAX_DRAIN_EVENTS: usize = 64;
+
 #[derive(Clone, Debug)]
 pub struct PaneRefreshRequest {
     pub side: PaneSide,
@@ -72,7 +74,11 @@ impl PaneRefreshReceiver {
         let mut seen_left = first == PaneSide::Left;
         let mut seen_right = first == PaneSide::Right;
 
-        loop {
+        // Drain only a bounded batch. Filesystem backends can produce events
+        // continuously; an unbounded try_recv loop could otherwise monopolize
+        // this background task and delay the authoritative directory snapshot.
+        // Anything left in the channel is processed by the next recv cycle.
+        for _ in 0..MAX_DRAIN_EVENTS {
             match self.receiver.try_recv() {
                 Ok(PaneSide::Left) => seen_left = true,
                 Ok(PaneSide::Right) => seen_right = true,
@@ -135,7 +141,7 @@ impl PaneRefreshCoordinator {
 
 #[cfg(test)]
 mod tests {
-    use super::{PaneRefreshReceiver, PaneRefreshRequest};
+    use super::{PaneRefreshReceiver, PaneRefreshRequest, MAX_DRAIN_EVENTS};
     use crate::pane_watcher::PaneSide;
     use bifur_core::fs_model::PaneState;
     use std::{fs, sync::mpsc, time::SystemTime};
@@ -223,5 +229,18 @@ mod tests {
 
         assert_eq!(receiver.recv().unwrap(), PaneSide::Left);
         assert_eq!(receiver.recv().unwrap(), PaneSide::Right);
+    }
+
+    #[test]
+    fn receiver_bounds_each_drain_batch() {
+        let (sender, receiver) = mpsc::channel();
+        let mut receiver = PaneRefreshReceiver::new(receiver);
+
+        for _ in 0..(MAX_DRAIN_EVENTS + 2) {
+            sender.send(PaneSide::Left).unwrap();
+        }
+
+        assert_eq!(receiver.recv().unwrap(), PaneSide::Left);
+        assert_eq!(receiver.recv().unwrap(), PaneSide::Left);
     }
 }
