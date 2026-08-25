@@ -40,6 +40,10 @@ fn control_identity<'a>(key: &'a str, key_char: Option<&'a str>) -> &'a str {
     key
 }
 
+fn is_ascii_letter_key(key: &str) -> bool {
+    key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic()
+}
+
 pub fn translate_terminal_key(
     key: &str,
     key_char: Option<&str>,
@@ -62,7 +66,10 @@ pub fn translate_terminal_key(
     }
 
     let produced = printable(key_char);
-    let is_altgr = modifiers.control && modifiers.alt && produced.is_some_and(|text| text != key);
+    let is_altgr = modifiers.control
+        && modifiers.alt
+        && is_ascii_letter_key(key)
+        && produced.is_some_and(|text| text != key);
     if is_altgr {
         return produced.map(|text| text.as_bytes().to_vec());
     }
