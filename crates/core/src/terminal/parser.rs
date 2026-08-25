@@ -277,8 +277,7 @@ impl ScreenBuffer {
     }
 
     fn save_cursor(&mut self) {
-        self.normalize_pending_wrap();
-        self.saved_cursor = Some((self.cursor_row, self.cursor_col));
+        self.saved_cursor = Some((self.cursor_row, self.cursor_col.min(self.cols - 1)));
     }
 
     fn restore_cursor(&mut self) {
@@ -471,11 +470,13 @@ mod tests {
     }
 
     #[test]
-    fn save_cursor_cancels_pending_autowrap() {
+    fn save_cursor_preserves_pending_autowrap() {
         let mut screen = ScreenBuffer::new(4, 2);
-        screen.push_bytes(b"abcd\x1b[s\x1b[2;1H\x1b[uX");
+        screen.push_bytes(b"abcd\x1b[sX");
+        assert_eq!(screen.lines(), vec!["abcd", "X"]);
 
-        assert_eq!(screen.lines(), vec!["abcX", ""]);
+        screen.push_bytes(b"\x1b[uY");
+        assert_eq!(screen.lines(), vec!["abcY", "X"]);
     }
 
     #[test]
