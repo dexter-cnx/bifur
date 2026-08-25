@@ -105,9 +105,9 @@ impl ScreenBuffer {
     }
 
     /// Initial parser: handles normal text/control characters and a small VT100
-    /// cursor subset while keeping raw escape bytes out of the visible surface.
-    /// A complete VT parser can replace this without changing the public
-    /// `ScreenBuffer` contract.
+    /// cursor/erase subset while keeping raw escape bytes out of the visible
+    /// surface. A complete VT parser can replace this without changing the
+    /// public `ScreenBuffer` contract.
     ///
     /// PTY reads may split a multibyte UTF-8 code point. `utf8_pending` retains
     /// an incomplete trailing sequence until the next read instead of replacing
@@ -242,6 +242,14 @@ impl ScreenBuffer {
                 self.cursor_row = row.min(self.rows - 1);
                 self.cursor_col = col.min(self.cols - 1);
             }
+            'J' => {
+                self.normalize_pending_wrap();
+                self.erase_display(self.csi_erase_mode());
+            }
+            'K' => {
+                self.normalize_pending_wrap();
+                self.erase_line(self.csi_erase_mode());
+            }
             _ => {}
         }
     }
@@ -263,6 +271,36 @@ impl ScreenBuffer {
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(1)
+    }
+
+    fn csi_erase_mode(&self) -> usize {
+        if self.csi_params.is_empty() {
+            0
+        } else {
+            self.csi_params.parse::<usize>().unwrap_or(usize::MAX)
+        }
+    }
+
+    fn erase_display(&mut self, mode: usize) {
+        let cursor = self.cursor_row * self.cols + self.cursor_col;
+        match mode {
+            0 => self.cells[cursor..].fill(Cell::default()),
+            1 => self.cells[..=cursor].fill(Cell::default()),
+            2 => self.cells.fill(Cell::default()),
+            _ => {}
+        }
+    }
+
+    fn erase_line(&mut self, mode: usize) {
+        let row_start = self.cursor_row * self.cols;
+        let cursor = row_start + self.cursor_col;
+        let row_end = row_start + self.cols;
+        match mode {
+            0 => self.cells[cursor..row_end].fill(Cell::default()),
+            1 => self.cells[row_start..=cursor].fill(Cell::default()),
+            2 => self.cells[row_start..row_end].fill(Cell::default()),
+            _ => {}
+        }
     }
 
     fn put_char(&mut self, ch: char) {
@@ -366,6 +404,40 @@ mod tests {
         assert_eq!(screen.lines()[0], " Y");
         assert_eq!(screen.lines()[1], "   X");
         assert_eq!(screen.lines()[2], "       Z");
+    }
+
+    #[test]
+    fn erases_line_with_vt_modes() {
+        let mut screen = ScreenBuffer::new(6, 3);
+        screen.push_bytes(b"abcdef\x1b[1;3H\x1b[K");
+        assert_eq!(screen.lines()[0], "ab");
+
+        screen.push_bytes(b"\x1b[1;6HZ\x1b[1;4H\x1b[1K");
+        assert_eq!(screen.lines()[0], "     Z");
+
+        screen.push_bytes(b"\x1b[2K");
+        assert_eq!(screen.lines()[0], "");
+    }
+
+    #[test]
+    fn erases_display_with_vt_modes() {
+        let mut screen = ScreenBuffer::new(4, 3);
+        screen.push_bytes(b"abcd\nefgh\nijkl\x1b[2;3H\x1b[J");
+        assert_eq!(screen.lines(), vec!["abcd", "ef", ""]);
+
+        screen.push_bytes(b"\x1b[2;3HXY\x1b[2;3H\x1b[1J");
+        assert_eq!(screen.lines(), vec!["", "   Y", ""]);
+
+        screen.push_bytes(b"\x1b[2J");
+        assert_eq!(screen.lines(), vec!["", "", ""]);
+    }
+
+    #[test]
+    fn erase_cancels_pending_autowrap() {
+        let mut screen = ScreenBuffer::new(4, 2);
+        screen.push_bytes(b"abcd\x1b[KX");
+
+        assert_eq!(screen.lines(), vec!["abcX", ""]);
     }
 
     #[test]
