@@ -7,7 +7,7 @@ use std::{
 pub struct PaneRefreshCoordinator {
     left: PaneWatcher,
     right: PaneWatcher,
-    receiver: Receiver<PaneSide>,
+    receiver: Option<Receiver<PaneSide>>,
 }
 
 impl PaneRefreshCoordinator {
@@ -19,7 +19,7 @@ impl PaneRefreshCoordinator {
         Ok(Self {
             left,
             right,
-            receiver,
+            receiver: Some(receiver),
         })
     }
 
@@ -30,7 +30,7 @@ impl PaneRefreshCoordinator {
         }
     }
 
-    pub fn into_receiver(self) -> Receiver<PaneSide> {
-        self.receiver
+    pub fn take_receiver(&mut self) -> Option<Receiver<PaneSide>> {
+        self.receiver.take()
     }
 }
