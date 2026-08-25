@@ -74,9 +74,7 @@ pub fn navigation_sequence(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        navigation_sequence, TerminalModifiers, TerminalNavigationKey,
-    };
+    use super::{navigation_sequence, TerminalModifiers, TerminalNavigationKey};
 
     #[test]
     fn uses_ss3_for_unmodified_application_cursor_keys() {
