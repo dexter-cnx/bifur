@@ -505,11 +505,16 @@ impl ScreenBuffer {
     }
 
     fn csi_single_param(&self, default: usize) -> usize {
-        self.csi_params
-            .parse::<usize>()
-            .ok()
-            .filter(|value| *value > 0)
-            .unwrap_or(default)
+        if self.csi_params.is_empty() {
+            return default;
+        }
+
+        match self.csi_params.parse::<usize>() {
+            Ok(0) => default,
+            Ok(value) => value,
+            Err(_) if self.csi_params.bytes().all(|byte| byte.is_ascii_digit()) => usize::MAX,
+            Err(_) => default,
+        }
     }
 
     fn csi_position_param(value: Option<&str>) -> usize {
@@ -798,7 +803,7 @@ mod tests {
         let mut screen = ScreenBuffer::new(4, 3);
         screen.push_bytes(b"\x1b[99d\x1b[99GZ\x1b[0GQ\x1b[0dR");
 
-        assert_eq!(screen.lines()[0], "R");
+        assert_eq!(screen.lines()[0], " R");
         assert_eq!(screen.lines()[2], "Q  Z");
     }
 
@@ -808,8 +813,32 @@ mod tests {
         screen.push_bytes(b"abcd\x1b[1GX");
         assert_eq!(screen.lines(), vec!["Xbcd", ""]);
 
-        screen.push_bytes(b"\x1b[2;4HWXYZ\x1b[1dQ");
-        assert_eq!(screen.lines()[0], "XbcQ");
+        let mut screen = ScreenBuffer::new(4, 2);
+        screen.push_bytes(b"abcd\x1b[2dX");
+        assert_eq!(screen.lines(), vec!["abcd", "   X"]);
+    }
+
+    #[test]
+    fn overflowing_extended_positioning_params_clamp_to_bounds() {
+        let mut screen = ScreenBuffer::new(4, 3);
+        let huge = b"999999999999999999999999999999999999999999999999";
+
+        let mut sequence = Vec::new();
+        sequence.extend_from_slice(b"\x1b[");
+        sequence.extend_from_slice(huge);
+        sequence.extend_from_slice(b"d\x1b[");
+        sequence.extend_from_slice(huge);
+        sequence.extend_from_slice(b"GZ");
+        screen.push_bytes(&sequence);
+        assert_eq!(screen.lines()[2], "   Z");
+
+        screen.push_bytes(b"\x1b[1;1H");
+        let mut movement = Vec::new();
+        movement.extend_from_slice(b"\x1b[");
+        movement.extend_from_slice(huge);
+        movement.extend_from_slice(b"EX");
+        screen.push_bytes(&movement);
+        assert_eq!(screen.lines()[2], "X  Z");
     }
 
     #[test]
