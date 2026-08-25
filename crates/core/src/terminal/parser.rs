@@ -276,6 +276,11 @@ impl ScreenBuffer {
         }
 
         match command {
+            '@' => {
+                let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
+                self.insert_chars(count);
+            }
             'A' => {
                 let count = self.csi_single_param(1);
                 self.normalize_pending_wrap();
@@ -327,6 +332,16 @@ impl ScreenBuffer {
             'K' => {
                 self.normalize_pending_wrap();
                 self.erase_line(self.csi_erase_mode());
+            }
+            'P' => {
+                let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
+                self.delete_chars(count);
+            }
+            'X' => {
+                let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
+                self.erase_chars(count);
             }
             'd' => {
                 let row = self.csi_single_param(1).saturating_sub(1);
@@ -536,6 +551,48 @@ impl ScreenBuffer {
         Cell {
             bg: self.current_bg,
             ..Cell::default()
+        }
+    }
+
+    fn insert_chars(&mut self, count: usize) {
+        let row_start = self.cursor_row * self.cols;
+        let cursor = row_start + self.cursor_col;
+        let row_end = row_start + self.cols;
+        let available = row_end - cursor;
+        let count = count.min(available);
+        if count == 0 {
+            return;
+        }
+
+        if count < available {
+            self.cells.copy_within(cursor..row_end - count, cursor + count);
+        }
+        self.cells[cursor..cursor + count].fill(self.erase_cell());
+    }
+
+    fn delete_chars(&mut self, count: usize) {
+        let row_start = self.cursor_row * self.cols;
+        let cursor = row_start + self.cursor_col;
+        let row_end = row_start + self.cols;
+        let available = row_end - cursor;
+        let count = count.min(available);
+        if count == 0 {
+            return;
+        }
+
+        if count < available {
+            self.cells.copy_within(cursor + count..row_end, cursor);
+        }
+        self.cells[row_end - count..row_end].fill(self.erase_cell());
+    }
+
+    fn erase_chars(&mut self, count: usize) {
+        let row_start = self.cursor_row * self.cols;
+        let cursor = row_start + self.cursor_col;
+        let row_end = row_start + self.cols;
+        let count = count.min(row_end - cursor);
+        if count > 0 {
+            self.cells[cursor..cursor + count].fill(self.erase_cell());
         }
     }
 
@@ -839,6 +896,49 @@ mod tests {
         movement.extend_from_slice(b"EX");
         screen.push_bytes(&movement);
         assert_eq!(screen.lines()[2], "X  Z");
+    }
+
+    #[test]
+    fn character_editing_inserts_deletes_and_erases_cells() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"abcdef\x1b[1;3H\x1b[2@");
+        assert_eq!(screen.lines()[0], "ab  cdef");
+
+        screen.push_bytes(b"\x1b[1;4H\x1b[3P");
+        assert_eq!(screen.lines()[0], "ab def");
+
+        screen.push_bytes(b"\x1b[1;3H\x1b[2X");
+        assert_eq!(screen.lines()[0], "ab  ef");
+    }
+
+    #[test]
+    fn character_editing_uses_active_background_for_blank_cells() {
+        let mut screen = ScreenBuffer::new(6, 1);
+        screen.push_bytes(b"abcdef\x1b[44m\x1b[1;3H\x1b[@");
+        assert_eq!(screen.cells[2].ch, ' ');
+        assert_eq!(screen.cells[2].bg, ANSI_COLORS[4]);
+
+        screen.push_bytes(b"\x1b[1;5H\x1b[P");
+        assert_eq!(screen.cells[5].ch, ' ');
+        assert_eq!(screen.cells[5].bg, ANSI_COLORS[4]);
+
+        screen.push_bytes(b"\x1b[1;2H\x1b[2X");
+        assert!(screen.cells[1..3]
+            .iter()
+            .all(|cell| cell.ch == ' ' && cell.bg == ANSI_COLORS[4]));
+    }
+
+    #[test]
+    fn character_editing_defaults_clamps_and_cancels_pending_autowrap() {
+        let mut screen = ScreenBuffer::new(4, 2);
+        screen.push_bytes(b"abcd\x1b[@X");
+        assert_eq!(screen.lines(), vec!["abcX", ""]);
+
+        screen.push_bytes(b"\x1b[1;2H\x1b[99P");
+        assert_eq!(screen.lines()[0], "a");
+
+        screen.push_bytes(b"\x1b[1;1Hzzzz\x1b[0X");
+        assert_eq!(screen.lines()[0], "zzz");
     }
 
     #[test]
