@@ -57,6 +57,35 @@ impl PaneState {
         entries
     }
 
+    pub fn replace_entries(&mut self, source_path: &Path, entries: Vec<FileEntry>) -> bool {
+        if source_path != self.current_path {
+            return false;
+        }
+
+        let selected_path = self
+            .entries
+            .get(self.selected)
+            .map(|entry| entry.path.clone());
+        let previous_index = self.selected;
+
+        self.entries = entries;
+        if self.entries.is_empty() {
+            self.selected = 0;
+            return true;
+        }
+
+        self.selected = selected_path
+            .and_then(|path| self.entries.iter().position(|entry| entry.path == path))
+            .unwrap_or_else(|| previous_index.min(self.entries.len() - 1));
+        true
+    }
+
+    pub fn refresh(&mut self) {
+        let source_path = self.current_path.clone();
+        let entries = Self::read_dir(&source_path);
+        self.replace_entries(&source_path, entries);
+    }
+
     pub fn select_next(&mut self) -> bool {
         if self.entries.is_empty() || self.selected + 1 >= self.entries.len() {
             return false;
@@ -144,6 +173,69 @@ mod navigation_tests {
         assert!(pane.select_previous());
         assert_eq!(pane.selected, 0);
         assert!(!pane.select_previous());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_preserves_selected_entry_path() {
+        let root = temp_dir();
+        fs::write(root.join("c.txt"), "c").unwrap();
+        let mut pane = PaneState::new(&root);
+        pane.selected = pane
+            .entries
+            .iter()
+            .position(|entry| entry.path == root.join("b"))
+            .unwrap();
+
+        fs::write(root.join("a.txt"), "a").unwrap();
+        pane.refresh();
+
+        assert_eq!(pane.entries[pane.selected].path, root.join("b"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_clamps_selection_when_selected_entry_disappears() {
+        let root = temp_dir();
+        fs::write(root.join("c.txt"), "c").unwrap();
+        let mut pane = PaneState::new(&root);
+        let selected_path = root.join("c.txt");
+        pane.selected = pane
+            .entries
+            .iter()
+            .position(|entry| entry.path == selected_path)
+            .unwrap();
+
+        fs::remove_file(&selected_path).unwrap();
+        pane.refresh();
+
+        assert!(pane.selected < pane.entries.len());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stale_snapshot_is_rejected_after_navigation() {
+        let root = temp_dir();
+        let stale_entries = PaneState::read_dir(&root);
+        let mut pane = PaneState::new(&root);
+        pane.selected = pane
+            .entries
+            .iter()
+            .position(|entry| entry.path == root.join("a"))
+            .unwrap();
+        assert!(pane.enter());
+        let current_path = pane.current_path.clone();
+        let current_entries = pane.entries.clone();
+
+        assert!(!pane.replace_entries(&root, stale_entries));
+        assert_eq!(pane.current_path, current_path);
+        assert_eq!(pane.entries.len(), current_entries.len());
+        assert!(pane
+            .entries
+            .iter()
+            .zip(current_entries.iter())
+            .all(|(actual, expected)| actual.path == expected.path));
 
         let _ = fs::remove_dir_all(root);
     }

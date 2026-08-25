@@ -16,6 +16,7 @@ Primary frontend: GPUI on macOS first. Future frontend: Flutter, reusing `crates
 6. When active pane/cwd changes, synchronize the running terminal with `session.set_cwd()`.
 7. Keep `CommandBlock` history as a first-class core model for future AI functionality.
 8. Filesystem paths remain lossless `PathBuf` values in core; lossy conversion is display/bridge-only.
+9. Frontend-specific key/event types stay outside core. Terminal byte protocol encoding belongs in core.
 
 ## M0 status
 
@@ -35,48 +36,54 @@ Delivered:
 - incremental UTF-8 handling across PTY reads
 - code walkthrough + handoff + CI
 
-## M1 status
+## M1 delivered
 
-PR #2 delivered keyboard dual-pane navigation and terminal cwd synchronization.
-
-PR #3 delivered terminal input mode:
-
-- `F6` toggles pane-vs-terminal input
-- Enter, Backspace, Tab, Escape, arrows, Space, and printable text forward to `TerminalSession::send_input()`
-- printable input uses GPUI `key_char`, preserving shifted characters and non-US keyboard layouts
-- terminal input errors surface in the GPUI status strip
+- keyboard dual-pane navigation and terminal cwd synchronization
+- `F6` pane-vs-terminal input mode
+- event-driven terminal repaint from PTY activity
+- terminal resize from GPUI window bounds
+- core-owned modifier-aware navigation encoding
+- core-owned Ctrl/control-sequence encoding
+- GPUI input policy regression harness
+- production GPUI terminal input routed through the tested policy
+- AltGr preservation for letter, digit, and punctuation layouts
+- macOS Option/Meta transformed-glyph fallback
+- pre-push formatting and preflight guardrails via `make setup-hooks`
 
 ## Current M1 branch
 
-Branch: `feature/m1-terminal-repaint`
+Branch: `feature/m1-pane-refresh-model`
 
-Current hardening slice:
+Current slice:
 
-- CI now compiles `bifur` GPUI frontend instead of validating only `bifur-core`
-- CI also compiles `bifur-bridge`
-- Windows terminal shell selection checks `SHELL`, then `COMSPEC`, then falls back to `pwsh.exe`
-
-This slice intentionally makes frontend/bridge compile failures visible before deeper PTY repaint and resize work lands.
+- add core pane refresh semantics before filesystem watcher wiring
+- preserve the selected entry by lossless path when a directory refreshes
+- clamp selection safely when the selected entry disappears
+- keep background I/O orchestration in the frontend while state transition semantics remain in core
 
 ## M1 remaining work
 
-1. Add modifier-aware terminal input mapping, including Ctrl/Alt combinations.
-2. Add event-driven GPUI invalidation when the PTY reader updates `ScreenBuffer`.
-3. Resize PTY/`ScreenBuffer` from terminal view bounds.
-4. Wire `notify` to pane refresh without blocking render.
-5. Expand parser toward VT100/xterm semantics while preserving `ScreenBuffer` API.
-6. Pin a known-good GPUI revision once macOS validation is complete.
+1. Wire `notify` to pane refresh without blocking GPUI render.
+2. Move directory reads triggered by watcher events off the UI/render path and apply results through `PaneState::replace_entries()`.
+3. Expand parser toward VT100/xterm semantics while preserving the `ScreenBuffer` API.
+4. Pin a known-good GPUI revision once macOS validation is complete.
+5. Update code walkthrough after watcher/refresh architecture lands.
 
 ## Current limitations
 
-- Ctrl/Alt terminal combinations are not forwarded yet
-- PTY output does not yet trigger event-driven repaint
-- terminal resize is not connected to GPUI bounds
-- file watching is not wired
-- directory loading remains synchronous
+- file watching is not wired yet
+- initial directory loading and explicit Enter/Backspace navigation still perform synchronous directory reads
+- parser coverage is still intentionally smaller than full VT100/xterm behavior
 - Windows PTY architecture is present but not yet validated with the GPUI frontend
 
 ## Validation commands
+
+```bash
+make format-check
+make preflight
+```
+
+Equivalent CI checks include:
 
 ```bash
 cargo fmt --all -- --check
@@ -85,7 +92,7 @@ cargo check -p bifur
 cargo check -p bifur-bridge
 ```
 
-Format before every push. CI must compile all touched runtime boundaries, not only core.
+Run `make setup-hooks` once per clone so formatting/preflight runs before every push.
 
 ## Definition of done for M1
 
@@ -96,5 +103,6 @@ Format before every push. CI must compile all touched runtime boundaries, not on
 - Terminal accepts keyboard input and displays shell output.
 - PTY output triggers repaint without blocking the UI thread.
 - Terminal resize follows GPUI bounds.
+- Pane contents react to filesystem changes without blocking render.
 - Core tests stay green and core still has zero GPUI dependencies.
 - Handoff and code walkthrough are updated with architectural changes.
