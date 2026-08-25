@@ -2,7 +2,7 @@ use crate::pane_watcher::{PaneSide, PaneWatcher};
 use bifur_core::fs_model::{FileEntry, PaneState};
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::mpsc::{self, Receiver, RecvError, Sender, TryRecvError},
 };
 
 #[derive(Clone, Debug)]
@@ -43,11 +43,61 @@ impl PaneRefreshSnapshot {
     }
 }
 
+pub struct PaneRefreshReceiver {
+    receiver: Receiver<PaneSide>,
+    pending_left: bool,
+    pending_right: bool,
+}
+
+impl PaneRefreshReceiver {
+    fn new(receiver: Receiver<PaneSide>) -> Self {
+        Self {
+            receiver,
+            pending_left: false,
+            pending_right: false,
+        }
+    }
+
+    pub fn recv(&mut self) -> Result<PaneSide, RecvError> {
+        if self.pending_left {
+            self.pending_left = false;
+            return Ok(PaneSide::Left);
+        }
+        if self.pending_right {
+            self.pending_right = false;
+            return Ok(PaneSide::Right);
+        }
+
+        let first = self.receiver.recv()?;
+        let mut seen_left = first == PaneSide::Left;
+        let mut seen_right = first == PaneSide::Right;
+
+        loop {
+            match self.receiver.try_recv() {
+                Ok(PaneSide::Left) => seen_left = true,
+                Ok(PaneSide::Right) => seen_right = true,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
+
+        match first {
+            PaneSide::Left => {
+                self.pending_right = seen_right;
+                Ok(PaneSide::Left)
+            }
+            PaneSide::Right => {
+                self.pending_left = seen_left;
+                Ok(PaneSide::Right)
+            }
+        }
+    }
+}
+
 pub struct PaneRefreshCoordinator {
     left: PaneWatcher,
     right: PaneWatcher,
     sender: Sender<PaneSide>,
-    receiver: Option<Receiver<PaneSide>>,
+    receiver: Option<PaneRefreshReceiver>,
 }
 
 impl PaneRefreshCoordinator {
@@ -60,7 +110,7 @@ impl PaneRefreshCoordinator {
             left,
             right,
             sender,
-            receiver: Some(receiver),
+            receiver: Some(PaneRefreshReceiver::new(receiver)),
         })
     }
 
@@ -78,17 +128,17 @@ impl PaneRefreshCoordinator {
         Ok(())
     }
 
-    pub fn take_receiver(&mut self) -> Option<Receiver<PaneSide>> {
+    pub fn take_receiver(&mut self) -> Option<PaneRefreshReceiver> {
         self.receiver.take()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::PaneRefreshRequest;
+    use super::{PaneRefreshReceiver, PaneRefreshRequest};
     use crate::pane_watcher::PaneSide;
     use bifur_core::fs_model::PaneState;
-    use std::{fs, time::SystemTime};
+    use std::{fs, sync::mpsc, time::SystemTime};
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
         let mut root = std::env::temp_dir();
@@ -159,5 +209,19 @@ mod tests {
         assert_eq!(left.current_path, root.join("child"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn receiver_coalesces_duplicate_bursts_per_pane() {
+        let (sender, receiver) = mpsc::channel();
+        let mut receiver = PaneRefreshReceiver::new(receiver);
+
+        sender.send(PaneSide::Left).unwrap();
+        sender.send(PaneSide::Left).unwrap();
+        sender.send(PaneSide::Right).unwrap();
+        sender.send(PaneSide::Right).unwrap();
+
+        assert_eq!(receiver.recv().unwrap(), PaneSide::Left);
+        assert_eq!(receiver.recv().unwrap(), PaneSide::Right);
     }
 }
