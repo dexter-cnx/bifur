@@ -11,6 +11,12 @@ pub struct InputModifiers {
     pub function: bool,
 }
 
+impl InputModifiers {
+    fn modified(self) -> bool {
+        self.shift || self.alt || self.control || self.platform || self.function
+    }
+}
+
 fn navigation_key(key: &str) -> Option<TerminalNavigationKey> {
     match key {
         "up" => Some(TerminalNavigationKey::Up),
@@ -42,6 +48,23 @@ fn control_identity<'a>(key: &'a str, key_char: Option<&'a str>) -> &'a str {
 
 fn is_ascii_letter_key(key: &str) -> bool {
     key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic()
+}
+
+fn alt_meta_text(key: &str, key_char: Option<&str>, shift: bool) -> Option<String> {
+    let produced = printable(key_char)?;
+    if produced.is_ascii() {
+        return Some(produced.to_string());
+    }
+
+    if key.len() == 1 && key.is_ascii() {
+        let mut key = key.to_string();
+        if shift {
+            key.make_ascii_uppercase();
+        }
+        return Some(key);
+    }
+
+    Some(produced.to_string())
 }
 
 pub fn translate_terminal_key(
@@ -90,7 +113,25 @@ pub fn translate_terminal_key(
         return control_sequence(control_identity(key, key_char), modifiers.alt);
     }
 
-    None
+    if !modifiers.modified() {
+        return match key {
+            "enter" => Some(b"\r".to_vec()),
+            "backspace" => Some(vec![0x7f]),
+            "tab" => Some(b"\t".to_vec()),
+            "escape" => Some(vec![0x1b]),
+            _ => produced.map(|text| text.as_bytes().to_vec()),
+        };
+    }
+
+    if modifiers.alt {
+        let text = alt_meta_text(key, key_char, modifiers.shift)?;
+        let mut bytes = Vec::with_capacity(1 + text.len());
+        bytes.push(0x1b);
+        bytes.extend_from_slice(text.as_bytes());
+        return Some(bytes);
+    }
+
+    produced.map(|text| text.as_bytes().to_vec())
 }
 
 #[cfg(test)]
@@ -195,6 +236,35 @@ mod tests {
                 false,
             ),
             Some(vec![0x1b, 0x00])
+        );
+    }
+
+    #[test]
+    fn preserves_plain_terminal_keys() {
+        assert_eq!(
+            translate_terminal_key("enter", None, InputModifiers::default(), false),
+            Some(b"\r".to_vec())
+        );
+        assert_eq!(
+            translate_terminal_key("a", Some("a"), InputModifiers::default(), false),
+            Some(b"a".to_vec())
+        );
+    }
+
+    #[test]
+    fn preserves_alt_meta_ascii_fallback_for_transformed_glyphs() {
+        assert_eq!(
+            translate_terminal_key(
+                "f",
+                Some("ƒ"),
+                InputModifiers {
+                    alt: true,
+                    shift: true,
+                    ..InputModifiers::default()
+                },
+                false,
+            ),
+            Some(b"\x1bF".to_vec())
         );
     }
 }
