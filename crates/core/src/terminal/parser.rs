@@ -296,6 +296,23 @@ impl ScreenBuffer {
                 self.normalize_pending_wrap();
                 self.cursor_col = self.cursor_col.saturating_sub(count);
             }
+            'E' => {
+                let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
+                self.cursor_row = self.cursor_row.saturating_add(count).min(self.rows - 1);
+                self.cursor_col = 0;
+            }
+            'F' => {
+                let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
+                self.cursor_row = self.cursor_row.saturating_sub(count);
+                self.cursor_col = 0;
+            }
+            'G' => {
+                let col = self.csi_single_param(1).saturating_sub(1);
+                self.normalize_pending_wrap();
+                self.cursor_col = col.min(self.cols - 1);
+            }
             'H' | 'f' => {
                 let mut params = self.csi_params.split(';');
                 let row = Self::csi_position_param(params.next()).saturating_sub(1);
@@ -310,6 +327,11 @@ impl ScreenBuffer {
             'K' => {
                 self.normalize_pending_wrap();
                 self.erase_line(self.csi_erase_mode());
+            }
+            'd' => {
+                let row = self.csi_single_param(1).saturating_sub(1);
+                self.normalize_pending_wrap();
+                self.cursor_row = row.min(self.rows - 1);
             }
             'm' => self.apply_sgr(),
             's' if self.csi_params.is_empty() => self.save_cursor(),
@@ -751,6 +773,43 @@ mod tests {
 
         screen.push_bytes(b"\x1b[1A\x1b[4Dq");
         assert_eq!(screen.lines()[1], "   q");
+    }
+
+    #[test]
+    fn supports_next_and_previous_line_cursor_movement() {
+        let mut screen = ScreenBuffer::new(8, 4);
+        screen.push_bytes(b"\x1b[2;5H\x1b[2EX\x1b[3FY");
+
+        assert_eq!(screen.lines()[0], "Y");
+        assert_eq!(screen.lines()[3], "X");
+    }
+
+    #[test]
+    fn supports_absolute_column_and_row_positioning() {
+        let mut screen = ScreenBuffer::new(8, 4);
+        screen.push_bytes(b"\x1b[2;2H\x1b[6GX\x1b[4dY");
+
+        assert_eq!(screen.lines()[1], "     X");
+        assert_eq!(screen.lines()[3], "      Y");
+    }
+
+    #[test]
+    fn extended_positioning_uses_vt_defaults_and_clamps_bounds() {
+        let mut screen = ScreenBuffer::new(4, 3);
+        screen.push_bytes(b"\x1b[99d\x1b[99GZ\x1b[0GQ\x1b[0dR");
+
+        assert_eq!(screen.lines()[0], "R");
+        assert_eq!(screen.lines()[2], "Q  Z");
+    }
+
+    #[test]
+    fn extended_positioning_cancels_pending_autowrap() {
+        let mut screen = ScreenBuffer::new(4, 2);
+        screen.push_bytes(b"abcd\x1b[1GX");
+        assert_eq!(screen.lines(), vec!["Xbcd", ""]);
+
+        screen.push_bytes(b"\x1b[2;4HWXYZ\x1b[1dQ");
+        assert_eq!(screen.lines()[0], "XbcQ");
     }
 
     #[test]
