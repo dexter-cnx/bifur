@@ -11,7 +11,7 @@ pub mod viewport;
 
 pub use file_aware::FileAwareTerminal;
 pub use history::CommandBlock;
-pub use input::{navigation_sequence, TerminalModifiers, TerminalNavigationKey};
+pub use input::{control_sequence, navigation_sequence, TerminalModifiers, TerminalNavigationKey};
 pub use parser::{Cell, ScreenBuffer};
 pub use session::{TerminalConfig, TerminalEvent, TerminalSession};
 pub use viewport::TerminalViewport;
