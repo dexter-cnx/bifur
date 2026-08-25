@@ -8,7 +8,7 @@ BIFUR is split into three crates:
 - `crates/gpui_app`: macOS-first GPUI frontend.
 - `crates/bridge`: `flutter_rust_bridge` boundary for a future Flutter frontend.
 
-The frontend is intentionally replaceable. File operations, preview decisions, terminal ownership, parser state, and command history belong in core.
+The frontend is intentionally replaceable. Reusable file-state transitions, preview decisions, terminal ownership, parser state, and command history belong in core. GPUI event normalization, filesystem watcher lifecycle, and repaint scheduling stay in the GPUI frontend.
 
 ## 2. File model
 
@@ -16,20 +16,58 @@ The frontend is intentionally replaceable. File operations, preview decisions, t
 
 `PaneState::read_dir` reads a directory, builds serializable entries, and sorts directories before files. Paths remain `PathBuf` internally so Unix non-UTF-8 filenames stay lossless.
 
-M1 adds frontend-neutral selection primitives:
+M1 adds frontend-neutral navigation and refresh primitives:
 
 - `select_next()`
 - `select_previous()`
 - `enter() -> bool`
 - `up() -> bool`
+- `refresh()`
+- `replace_entries(source_path, entries) -> bool`
 
-The boolean result lets a frontend repaint or synchronize dependent state only when navigation actually changes something.
+`replace_entries` preserves the selected entry by lossless path when possible, clamps selection if the entry disappears, and rejects stale asynchronous snapshots when `source_path` no longer matches the pane's `current_path`.
 
-## 3. Preview
+## 3. Pane refresh architecture
+
+Filesystem watching belongs to the GPUI frontend, not core.
+
+```text
+notify::RecommendedWatcher
+        │ PaneSide signal
+        ▼
+PaneRefreshReceiver
+        │ coalesces queued duplicate signals per pane
+        ▼
+GPUI task captures current PathBuf
+        │
+        ▼
+background PaneRefreshRequest::read()
+        │ PaneRefreshSnapshot
+        ▼
+PaneRefreshSnapshot::apply()
+        │
+        ▼
+core PaneState::replace_entries()
+        │ accepted current-source snapshot
+        ▼
+cx.notify()
+```
+
+`PaneWatcher` owns `notify::RecommendedWatcher` and emits only `PaneSide`. It never reads directories or mutates pane state.
+
+`PaneRefreshCoordinator` owns both pane watchers and the refresh channel. Re-watching after Enter/Backspace installs the new watch first and then queues one authoritative refresh, closing the gap between the synchronous navigation read and watcher installation.
+
+`PaneRefreshReceiver` drains already-queued watcher signals and collapses duplicates so a burst causes at most one pending refresh per pane. This is not timer-based debounce: there is no artificial delay, and events that arrive while a directory read is in progress remain queued for the next cycle.
+
+`PaneRefreshRequest` carries only plain frontend data (`PaneSide + PathBuf`) into the background executor. No GPUI context and no mutable `PaneState` crosses into blocking filesystem I/O.
+
+`PaneRefreshSnapshot::apply()` returns `true` only if core accepts the snapshot for the pane's still-current source path. GPUI repaints only after that acceptance.
+
+## 4. Preview
 
 `crates/core/src/preview.rs` maps a selected path into `PreviewKind` using `mime_guess`. Text previews use a bounded prefix read rather than loading an entire large file into memory. Images are tagged for image rendering, and unknown content is treated as binary.
 
-## 4. Terminal architecture
+## 5. Terminal architecture
 
 ```text
 GPUI TerminalView
@@ -74,52 +112,58 @@ The parser is intentionally replaceable. Full VT100/xterm cursor and style suppo
 
 `crates/core/src/terminal/history.rs` stores command, output, cwd, exit code, and timestamp. Keeping this model from the beginning enables future AI features to work on structured command blocks instead of reconstructing history from rendered terminal text.
 
-## 5. GPUI interaction layer
+## 6. GPUI interaction layer
 
-`crates/gpui_app/src/main.rs` owns only presentation and interaction state. `BifurApp` now has a GPUI `FocusHandle` and tracks focus on the application root.
+`crates/gpui_app/src/main.rs` owns presentation and interaction state. `BifurApp` has a GPUI `FocusHandle`, terminal repaint task, pane refresh coordinator, and pane refresh task.
 
-The root receives unmodified key events:
+The root receives pane-mode key events:
 
 - `Tab`: switch active pane
 - `Down` / `j`: select next entry
 - `Up` / `k`: select previous entry
-- `Enter`: enter selected directory
-- `Backspace`: move to parent directory
+- `Enter`: enter selected directory, re-watch the new path, and synchronize terminal cwd
+- `Backspace`: move to parent directory, re-watch the new path, and synchronize terminal cwd
+- `F6`: switch between pane input and terminal input
 
-All directory-changing operations funnel through `sync_terminal_cwd()`. It copies the active pane `PathBuf` and calls `TerminalSession::set_cwd()`. This enforces the file-aware terminal rule without giving GPUI ownership of the PTY.
+Terminal key translation is tested in the GPUI-side input policy module, while terminal byte-protocol encoding for control/navigation sequences stays in core.
 
-`crates/gpui_app/src/terminal_view.rs` still depends on `ScreenBuffer`, not on `portable-pty`.
+`crates/gpui_app/src/terminal_view.rs` depends on `ScreenBuffer`, not on `portable-pty`.
 
-## 6. Flutter bridge
+## 7. Flutter bridge
 
 `crates/bridge/src/lib.rs` exposes file listing and batch-rename preview as the first FRB APIs. Terminal support should later use opaque core handles/events and must not expose GPUI types.
 
-## 7. Dependency direction
+The pane refresh architecture deliberately keeps reusable snapshot/state semantics in core while watcher scheduling remains frontend-specific, so a future Flutter frontend can use its own filesystem event mechanism and still call the same core transitions.
+
+## 8. Dependency direction
 
 Allowed:
 
 ```text
 gpui_app -> core
+gpui_app -> notify
 bridge   -> core
-core     -> portable-pty / notify / walkdir / rayon / mime_guess / regex
+core     -> portable-pty / walkdir / rayon / mime_guess / regex
 ```
 
 Forbidden:
 
 ```text
 core -> gpui
+core -> notify
 gpui_app -> bridge
 core -> Flutter types
 ```
 
 This dependency rule preserves the future Flutter frontend option.
 
-## 8. M1 remaining work
+## 9. M1 remaining work
 
-The current M1 slice establishes pane focus/navigation and cwd synchronization. Remaining interactive-terminal work is:
+Delivered interactive foundations now include pane navigation, terminal focus/input, PTY repaint/resize, and asynchronous watcher-driven pane refresh.
 
-1. terminal-vs-pane focus mode and raw key forwarding to `TerminalSession::send_input()`
-2. event-driven repaint when the PTY reader updates `ScreenBuffer`
-3. PTY resize from GPUI terminal bounds
-4. `notify`-driven pane refresh outside the render path
-5. fuller VT100/xterm semantics while preserving the `ScreenBuffer` API
+Remaining M1 work is:
+
+1. physical macOS validation of rapid create/delete/rename watcher bursts
+2. fuller VT100/xterm semantics while preserving the `ScreenBuffer` API
+3. pin a known-good GPUI revision after macOS validation
+4. decide whether explicit Enter/Backspace directory reads should later become fully asynchronous
