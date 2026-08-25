@@ -29,6 +29,33 @@ impl TerminalModifiers {
     }
 }
 
+pub fn control_sequence(key: &str, alt: bool) -> Option<Vec<u8>> {
+    let control = match key {
+        "space" | "@" => 0x00,
+        "[" => 0x1b,
+        "\\" => 0x1c,
+        "]" => 0x1d,
+        "^" => 0x1e,
+        "_" => 0x1f,
+        "?" => 0x7f,
+        _ if key.len() == 1 => {
+            let byte = key.as_bytes()[0];
+            if !byte.is_ascii_alphabetic() {
+                return None;
+            }
+            byte.to_ascii_uppercase() & 0x1f
+        }
+        _ => return None,
+    };
+
+    let mut bytes = Vec::with_capacity(if alt { 2 } else { 1 });
+    if alt {
+        bytes.push(0x1b);
+    }
+    bytes.push(control);
+    Some(bytes)
+}
+
 pub fn navigation_sequence(
     key: TerminalNavigationKey,
     application_cursor_keys: bool,
@@ -74,7 +101,21 @@ pub fn navigation_sequence(
 
 #[cfg(test)]
 mod tests {
-    use super::{navigation_sequence, TerminalModifiers, TerminalNavigationKey};
+    use super::{control_sequence, navigation_sequence, TerminalModifiers, TerminalNavigationKey};
+
+    #[test]
+    fn encodes_ascii_control_keys() {
+        assert_eq!(control_sequence("a", false), Some(vec![0x01]));
+        assert_eq!(control_sequence("Z", false), Some(vec![0x1a]));
+        assert_eq!(control_sequence("[", false), Some(vec![0x1b]));
+        assert_eq!(control_sequence("?", false), Some(vec![0x7f]));
+        assert_eq!(control_sequence("1", false), None);
+    }
+
+    #[test]
+    fn prefixes_alt_control_with_escape() {
+        assert_eq!(control_sequence("c", true), Some(vec![0x1b, 0x03]));
+    }
 
     #[test]
     fn uses_ss3_for_unmodified_application_cursor_keys() {
