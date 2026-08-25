@@ -17,6 +17,7 @@ Primary frontend: GPUI on macOS first. Future frontend: Flutter, reusing `crates
 7. Keep `CommandBlock` history as a first-class core model for future AI functionality.
 8. Filesystem paths remain lossless `PathBuf` values in core; lossy conversion is display/bridge-only.
 9. Frontend-specific key/event types stay outside core. Terminal byte protocol encoding belongs in core.
+10. Filesystem watcher lifecycle and GPUI scheduling stay in the frontend; reusable pane state transitions stay in core.
 
 ## M0 status
 
@@ -49,32 +50,37 @@ Delivered:
 - AltGr preservation for letter, digit, and punctuation layouts
 - macOS Option/Meta transformed-glyph fallback
 - pre-push formatting and preflight guardrails via `make setup-hooks`
+- core `PaneState::replace_entries()` refresh semantics with selection preservation and stale-source rejection
+- GPUI-owned `notify` watcher lifecycle for left/right panes
+- watcher-triggered directory reads moved to GPUI background executor work
+- production snapshot application through core stale-source validation
+- re-watch after Enter/Backspace with an authoritative post-watch refresh to close the read/watch gap
+- burst coalescing so queued duplicate watcher events cause at most one refresh per pane per batch
 
 ## Current M1 branch
 
-Branch: `feature/m1-pane-refresh-model`
+Branch: `feature/m1-pane-refresh-coalescing`
 
 Current slice:
 
-- add core pane refresh semantics before filesystem watcher wiring
-- preserve the selected entry by lossless path when a directory refreshes
-- clamp selection safely when the selected entry disappears
-- keep background I/O orchestration in the frontend while state transition semantics remain in core
+- coalesce bursty watcher signals without timer-based latency
+- preserve independent left/right refresh requests
+- keep events arriving during an active directory read available for the next refresh cycle
+- synchronize handoff and code walkthrough with the delivered asynchronous pane refresh architecture
 
 ## M1 remaining work
 
-1. Wire `notify` to pane refresh without blocking GPUI render.
-2. Move directory reads triggered by watcher events off the UI/render path and apply results through `PaneState::replace_entries()`.
-3. Expand parser toward VT100/xterm semantics while preserving the `ScreenBuffer` API.
-4. Pin a known-good GPUI revision once macOS validation is complete.
-5. Update code walkthrough after watcher/refresh architecture lands.
+1. Expand parser toward VT100/xterm semantics while preserving the `ScreenBuffer` API.
+2. Pin a known-good GPUI revision once macOS validation is complete.
+3. Validate watcher/refresh behavior on a physical macOS run with rapid create/delete/rename activity.
+4. Decide whether synchronous initial Enter/Backspace directory reads should later become fully asynchronous; watcher-triggered refresh is already off the UI/render path.
 
 ## Current limitations
 
-- file watching is not wired yet
 - initial directory loading and explicit Enter/Backspace navigation still perform synchronous directory reads
 - parser coverage is still intentionally smaller than full VT100/xterm behavior
 - Windows PTY architecture is present but not yet validated with the GPUI frontend
+- watcher behavior is production-wired but still needs physical burst validation on macOS
 
 ## Validation commands
 
@@ -88,6 +94,7 @@ Equivalent CI checks include:
 ```bash
 cargo fmt --all -- --check
 cargo test -p bifur-core
+cargo test -p bifur --lib
 cargo check -p bifur
 cargo check -p bifur-bridge
 ```
@@ -104,5 +111,6 @@ Run `make setup-hooks` once per clone so formatting/preflight runs before every 
 - PTY output triggers repaint without blocking the UI thread.
 - Terminal resize follows GPUI bounds.
 - Pane contents react to filesystem changes without blocking render.
-- Core tests stay green and core still has zero GPUI dependencies.
+- Bursty watcher activity does not cause redundant duplicate refreshes for the same pane.
+- Core tests stay green and core still has zero GPUI/notify dependencies.
 - Handoff and code walkthrough are updated with architectural changes.
