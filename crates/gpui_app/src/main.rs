@@ -112,10 +112,7 @@ impl BifurApp {
         let (mut pane_refresh, pane_refresh_status) =
             match PaneRefreshCoordinator::new(&home, &home) {
                 Ok(coordinator) => (Some(coordinator), None),
-                Err(error) => (
-                    None,
-                    Some(format!("Pane watcher unavailable: {error}")),
-                ),
+                Err(error) => (None, Some(format!("Pane watcher unavailable: {error}"))),
             };
 
         let pane_refresh_task = pane_refresh
@@ -148,9 +145,7 @@ impl BifurApp {
                             Err(_) => break,
                         };
 
-                        let snapshot = cx
-                            .background_spawn(async move { request.read() })
-                            .await;
+                        let snapshot = cx.background_spawn(async move { request.read() }).await;
 
                         if this
                             .update(cx, |app, cx| {
