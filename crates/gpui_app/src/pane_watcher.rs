@@ -18,10 +18,11 @@ pub struct PaneWatcher {
 impl PaneWatcher {
     pub fn new(side: PaneSide, path: &Path, sender: Sender<PaneSide>) -> notify::Result<Self> {
         let mut watcher =
-            notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-                if result.is_ok() {
-                    let _ = sender.send(side);
-                }
+            notify::recommended_watcher(move |_result: notify::Result<notify::Event>| {
+                // A watcher error can mean events were dropped (for example an
+                // overflow). Refreshing from the current pane path is the safest
+                // recovery because the consumer rebuilds an authoritative snapshot.
+                let _ = sender.send(side);
             })?;
         watcher.watch(path, RecursiveMode::NonRecursive)?;
 
@@ -41,8 +42,13 @@ impl PaneWatcher {
         // signals during this short overlap are harmless because the GPUI side
         // always reads the pane's current path and core rejects stale snapshots.
         self.watcher.watch(path, RecursiveMode::NonRecursive)?;
-        self.watcher.unwatch(&self.watched_path)?;
-        self.watched_path = path.to_path_buf();
+
+        let old_path = std::mem::replace(&mut self.watched_path, path.to_path_buf());
+        // Backends can drop a watch themselves when a directory disappears. At
+        // that point unwatch may fail even though the new watch is already valid.
+        // Keep the committed new state; a lingering old watch can only cause an
+        // extra refresh signal, which is safe because refresh reads current_path.
+        let _ = self.watcher.unwatch(&old_path);
         Ok(())
     }
 }
