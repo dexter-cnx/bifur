@@ -107,6 +107,10 @@ impl TerminalSession {
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
         let cols = cols.max(1);
         let rows = rows.max(1);
+        if self.config.cols == cols && self.config.rows == rows {
+            return Ok(());
+        }
+
         self.master.resize(PtySize {
             rows,
             cols,
