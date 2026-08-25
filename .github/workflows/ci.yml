@@ -27,3 +27,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: GPUI frontend check
         run: cargo check -p bifur
+      - name: GPUI frontend tests
+        run: cargo test -p bifur --lib
