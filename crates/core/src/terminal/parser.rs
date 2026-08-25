@@ -10,7 +10,7 @@ const ANSI_BRIGHT_COLORS: [u32; 8] = [
 ];
 const COLOR_CUBE_LEVELS: [u32; 6] = [0, 95, 135, 175, 215, 255];
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cell {
     pub ch: char,
     pub fg: u32,
@@ -904,7 +904,7 @@ mod tests {
         screen.push_bytes(b"abcdef\x1b[1;3H\x1b[2@");
         assert_eq!(screen.lines()[0], "ab  cdef");
 
-        screen.push_bytes(b"\x1b[1;4H\x1b[3P");
+        screen.push_bytes(b"\x1b[1;4H\x1b[2P");
         assert_eq!(screen.lines()[0], "ab def");
 
         screen.push_bytes(b"\x1b[1;3H\x1b[2X");
