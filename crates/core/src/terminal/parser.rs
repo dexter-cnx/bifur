@@ -28,6 +28,15 @@ impl Default for Cell {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SavedCursorState {
+    row: usize,
+    col: usize,
+    fg: u32,
+    bg: u32,
+    bold: bool,
+}
+
 /// UI-neutral terminal surface.
 ///
 /// This deliberately lives in `bifur-core`: GPUI and Flutter only consume a
@@ -40,6 +49,7 @@ pub struct ScreenBuffer {
     cursor_col: usize,
     cursor_row: usize,
     saved_cursor: Option<(usize, usize)>,
+    saved_legacy_cursor: Option<SavedCursorState>,
     current_fg: u32,
     current_bg: u32,
     current_bold: bool,
@@ -68,6 +78,7 @@ impl ScreenBuffer {
             cursor_col: 0,
             cursor_row: 0,
             saved_cursor: None,
+            saved_legacy_cursor: None,
             current_fg: DEFAULT_FG,
             current_bg: DEFAULT_BG,
             current_bold: false,
@@ -118,6 +129,21 @@ impl ScreenBuffer {
                 (target_row_start + row).min(replacement.rows - 1)
             };
             (row, col.min(replacement.cols - 1))
+        });
+        replacement.saved_legacy_cursor = self.saved_legacy_cursor.map(|saved| {
+            let row = if replacement.rows < self.rows {
+                saved
+                    .row
+                    .saturating_sub(source_row_start)
+                    .min(replacement.rows - 1)
+            } else {
+                (target_row_start + saved.row).min(replacement.rows - 1)
+            };
+            SavedCursorState {
+                row,
+                col: saved.col.min(replacement.cols - 1),
+                ..saved
+            }
         });
         replacement.current_fg = self.current_fg;
         replacement.current_bg = self.current_bg;
@@ -220,8 +246,8 @@ impl ScreenBuffer {
                         self.ansi_state = AnsiState::Csi;
                         return;
                     }
-                    '7' => self.save_cursor(),
-                    '8' => self.restore_cursor(),
+                    '7' => self.save_legacy_cursor(),
+                    '8' => self.restore_legacy_cursor(),
                     _ => {}
                 }
                 self.ansi_state = AnsiState::Ground;
@@ -306,6 +332,26 @@ impl ScreenBuffer {
         }
     }
 
+    fn save_legacy_cursor(&mut self) {
+        self.saved_legacy_cursor = Some(SavedCursorState {
+            row: self.cursor_row,
+            col: self.cursor_col.min(self.cols - 1),
+            fg: self.current_fg,
+            bg: self.current_bg,
+            bold: self.current_bold,
+        });
+    }
+
+    fn restore_legacy_cursor(&mut self) {
+        if let Some(saved) = self.saved_legacy_cursor {
+            self.cursor_row = saved.row.min(self.rows - 1);
+            self.cursor_col = saved.col.min(self.cols - 1);
+            self.current_fg = saved.fg;
+            self.current_bg = saved.bg;
+            self.current_bold = saved.bold;
+        }
+    }
+
     fn apply_sgr(&mut self) {
         let params: Vec<usize> = if self.csi_params.is_empty() {
             vec![0]
@@ -365,12 +411,20 @@ impl ScreenBuffer {
         }
     }
 
+    fn erase_cell(&self) -> Cell {
+        Cell {
+            bg: self.current_bg,
+            ..Cell::default()
+        }
+    }
+
     fn erase_display(&mut self, mode: usize) {
         let cursor = self.cursor_row * self.cols + self.cursor_col;
+        let erased = self.erase_cell();
         match mode {
-            0 => self.cells[cursor..].fill(Cell::default()),
-            1 => self.cells[..=cursor].fill(Cell::default()),
-            2 => self.cells.fill(Cell::default()),
+            0 => self.cells[cursor..].fill(erased),
+            1 => self.cells[..=cursor].fill(erased),
+            2 => self.cells.fill(erased),
             _ => {}
         }
     }
@@ -379,10 +433,11 @@ impl ScreenBuffer {
         let row_start = self.cursor_row * self.cols;
         let cursor = row_start + self.cursor_col;
         let row_end = row_start + self.cols;
+        let erased = self.erase_cell();
         match mode {
-            0 => self.cells[cursor..row_end].fill(Cell::default()),
-            1 => self.cells[row_start..=cursor].fill(Cell::default()),
-            2 => self.cells[row_start..row_end].fill(Cell::default()),
+            0 => self.cells[cursor..row_end].fill(erased),
+            1 => self.cells[row_start..=cursor].fill(erased),
+            2 => self.cells[row_start..row_end].fill(erased),
             _ => {}
         }
     }
@@ -468,6 +523,24 @@ mod tests {
         assert!(!screen.cells[0].bold);
         assert_eq!(screen.cells[1].fg, ANSI_COLORS[2]);
         assert!(!screen.cells[1].bold);
+    }
+
+    #[test]
+    fn legacy_cursor_restore_restores_saved_rendition() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"\x1b[31;1m\x1b7\x1b[34;22m\x1b8X");
+
+        assert_eq!(screen.cells[0].fg, ANSI_COLORS[1]);
+        assert!(screen.cells[0].bold);
+    }
+
+    #[test]
+    fn erase_uses_active_background_color() {
+        let mut screen = ScreenBuffer::new(4, 2);
+        screen.push_bytes(b"abcd\x1b[44m\x1b[2J");
+
+        assert!(screen.cells.iter().all(|cell| cell.ch == ' '));
+        assert!(screen.cells.iter().all(|cell| cell.bg == ANSI_COLORS[4]));
     }
 
     #[test]
