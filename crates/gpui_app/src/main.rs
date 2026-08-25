@@ -1,7 +1,9 @@
 mod terminal_view;
 
 use bifur_core::fs_model::PaneState;
-use bifur_core::terminal::{TerminalConfig, TerminalSession};
+use bifur_core::terminal::{
+    navigation_sequence, TerminalConfig, TerminalModifiers, TerminalNavigationKey, TerminalSession,
+};
 use gpui::prelude::*;
 use gpui::*;
 use gpui_platform::application;
@@ -121,27 +123,20 @@ fn alt_meta_text(keystroke: &Keystroke) -> Option<String> {
     Some(produced.to_string())
 }
 
-fn terminal_navigation_bytes(key: &str, application_cursor_keys: bool) -> Option<Vec<u8>> {
-    let bytes: &[u8] = match key {
-        "up" if application_cursor_keys => b"\x1bOA",
-        "down" if application_cursor_keys => b"\x1bOB",
-        "right" if application_cursor_keys => b"\x1bOC",
-        "left" if application_cursor_keys => b"\x1bOD",
-        "home" if application_cursor_keys => b"\x1bOH",
-        "end" if application_cursor_keys => b"\x1bOF",
-        "up" => b"\x1b[A",
-        "down" => b"\x1b[B",
-        "right" => b"\x1b[C",
-        "left" => b"\x1b[D",
-        "home" => b"\x1b[H",
-        "end" => b"\x1b[F",
-        "insert" => b"\x1b[2~",
-        "delete" => b"\x1b[3~",
-        "pageup" => b"\x1b[5~",
-        "pagedown" => b"\x1b[6~",
-        _ => return None,
-    };
-    Some(bytes.to_vec())
+fn terminal_navigation_key(key: &str) -> Option<TerminalNavigationKey> {
+    match key {
+        "up" => Some(TerminalNavigationKey::Up),
+        "down" => Some(TerminalNavigationKey::Down),
+        "right" => Some(TerminalNavigationKey::Right),
+        "left" => Some(TerminalNavigationKey::Left),
+        "home" => Some(TerminalNavigationKey::Home),
+        "end" => Some(TerminalNavigationKey::End),
+        "insert" => Some(TerminalNavigationKey::Insert),
+        "delete" => Some(TerminalNavigationKey::Delete),
+        "pageup" => Some(TerminalNavigationKey::PageUp),
+        "pagedown" => Some(TerminalNavigationKey::PageDown),
+        _ => None,
+    }
 }
 
 fn terminal_key_bytes(keystroke: &Keystroke, application_cursor_keys: bool) -> Option<Vec<u8>> {
@@ -150,23 +145,34 @@ fn terminal_key_bytes(keystroke: &Keystroke, application_cursor_keys: bool) -> O
         return None;
     }
 
+    let navigation_key = terminal_navigation_key(keystroke.key.as_str());
+
     // GPUI can surface Fn+Arrow/Delete as the translated navigation identity
     // while retaining the function modifier. Treat Fn as a physical translation
-    // for otherwise-unmodified navigation keys instead of rejecting it.
-    if !modifiers.control && !modifiers.alt && !modifiers.shift {
-        if let Some(bytes) =
-            terminal_navigation_bytes(keystroke.key.as_str(), application_cursor_keys)
-        {
-            return Some(bytes);
-        }
-    }
-
+    // only when no terminal modifiers are present.
     if modifiers.function {
+        if !modifiers.control && !modifiers.alt && !modifiers.shift {
+            return navigation_key.map(|key| {
+                navigation_sequence(key, application_cursor_keys, TerminalModifiers::default())
+            });
+        }
         return None;
     }
 
     if is_altgr_printable(keystroke) {
         return printable_key_char(keystroke).map(|text| text.as_bytes().to_vec());
+    }
+
+    if let Some(key) = navigation_key {
+        return Some(navigation_sequence(
+            key,
+            application_cursor_keys,
+            TerminalModifiers {
+                shift: modifiers.shift,
+                alt: modifiers.alt,
+                control: modifiers.control,
+            },
+        ));
     }
 
     if modifiers.control {
