@@ -1,6 +1,8 @@
 mod input_policy;
 mod terminal_view;
 
+use bifur::pane_refresh::{PaneRefreshCoordinator, PaneRefreshRequest};
+use bifur::pane_watcher::PaneSide;
 use bifur_core::fs_model::PaneState;
 use bifur_core::terminal::{TerminalConfig, TerminalSession};
 use gpui::prelude::*;
@@ -19,6 +21,9 @@ struct BifurApp {
     terminal_status: Option<String>,
     terminal_focused: bool,
     terminal_repaint_task: Option<Task<()>>,
+    pane_refresh: Option<PaneRefreshCoordinator>,
+    pane_refresh_status: Option<String>,
+    pane_refresh_task: Option<Task<()>>,
     focus_handle: FocusHandle,
     left_scroll: ScrollHandle,
     right_scroll: ScrollHandle,
@@ -104,6 +109,64 @@ impl BifurApp {
                 })
             });
 
+        let (mut pane_refresh, pane_refresh_status) =
+            match PaneRefreshCoordinator::new(&home, &home) {
+                Ok(coordinator) => (Some(coordinator), None),
+                Err(error) => (
+                    None,
+                    Some(format!("Pane watcher unavailable: {error}")),
+                ),
+            };
+
+        let pane_refresh_task = pane_refresh
+            .as_mut()
+            .and_then(PaneRefreshCoordinator::take_receiver)
+            .map(|refresh_rx| {
+                cx.spawn(async move |this, cx| {
+                    let mut refresh_rx = refresh_rx;
+                    loop {
+                        let (next_rx, side) = cx
+                            .background_spawn(async move {
+                                let side = refresh_rx.recv();
+                                (refresh_rx, side)
+                            })
+                            .await;
+                        refresh_rx = next_rx;
+
+                        let Ok(side) = side else {
+                            break;
+                        };
+
+                        let request = match this.update(cx, |app, _| {
+                            let source_path = match side {
+                                PaneSide::Left => app.left.current_path.clone(),
+                                PaneSide::Right => app.right.current_path.clone(),
+                            };
+                            PaneRefreshRequest::new(side, source_path)
+                        }) {
+                            Ok(request) => request,
+                            Err(_) => break,
+                        };
+
+                        let snapshot = cx
+                            .background_spawn(async move { request.read() })
+                            .await;
+
+                        if this
+                            .update(cx, |app, cx| {
+                                if snapshot.apply(&mut app.left, &mut app.right) {
+                                    app.reveal_selection();
+                                    cx.notify();
+                                }
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                })
+            });
+
         cx.observe_window_bounds(window, |this, window, cx| {
             this.sync_terminal_size(window);
             cx.notify();
@@ -119,6 +182,9 @@ impl BifurApp {
             terminal_status: None,
             terminal_focused: false,
             terminal_repaint_task,
+            pane_refresh,
+            pane_refresh_status,
+            pane_refresh_task,
             focus_handle: cx.focus_handle(),
             left_scroll: ScrollHandle::new(),
             right_scroll: ScrollHandle::new(),
@@ -146,9 +212,29 @@ impl BifurApp {
         }
     }
 
+    fn active_pane_side(&self) -> PaneSide {
+        match self.active {
+            ActiveSide::Left => PaneSide::Left,
+            ActiveSide::Right => PaneSide::Right,
+        }
+    }
+
     fn reveal_selection(&self) {
         self.active_scroll()
             .scroll_to_item(self.active_pane().selected);
+    }
+
+    fn sync_active_pane_watch(&mut self) {
+        let side = self.active_pane_side();
+        let path = self.active_pane().current_path.clone();
+        let Some(pane_refresh) = &mut self.pane_refresh else {
+            return;
+        };
+
+        self.pane_refresh_status = pane_refresh
+            .watch_path(side, &path)
+            .err()
+            .map(|error| format!("Pane watcher failed: {error}"));
     }
 
     fn sync_terminal_size(&mut self, window: &Window) {
@@ -258,6 +344,7 @@ impl BifurApp {
             "enter" => {
                 let changed = self.active_pane_mut().enter();
                 if changed {
+                    self.sync_active_pane_watch();
                     self.sync_terminal_cwd();
                     self.reveal_selection();
                 }
@@ -266,6 +353,7 @@ impl BifurApp {
             "backspace" => {
                 let changed = self.active_pane_mut().up();
                 if changed {
+                    self.sync_active_pane_watch();
                     self.sync_terminal_cwd();
                     self.reveal_selection();
                 }
@@ -365,6 +453,8 @@ impl Focusable for BifurApp {
 impl Render for BifurApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _keep_terminal_repaint_task_alive = &self.terminal_repaint_task;
+        let _keep_pane_refresh_task_alive = &self.pane_refresh_task;
+        let _keep_pane_refresh_watchers_alive = &self.pane_refresh;
         let active = self.active;
         div()
             .id("bifur-root")
@@ -397,6 +487,17 @@ impl Render for BifurApp {
                     )),
             )
             .when_some(self.terminal_status.clone(), |root, status| {
+                root.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .text_xs()
+                        .bg(rgb(0x3a241d))
+                        .text_color(rgb(0xffb4a2))
+                        .child(status),
+                )
+            })
+            .when_some(self.pane_refresh_status.clone(), |root, status| {
                 root.child(
                     div()
                         .px_3()
