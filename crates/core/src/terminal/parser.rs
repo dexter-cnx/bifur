@@ -217,18 +217,22 @@ impl ScreenBuffer {
         match command {
             'A' => {
                 let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
                 self.cursor_row = self.cursor_row.saturating_sub(count);
             }
             'B' => {
                 let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
                 self.cursor_row = self.cursor_row.saturating_add(count).min(self.rows - 1);
             }
             'C' => {
                 let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
                 self.cursor_col = self.cursor_col.saturating_add(count).min(self.cols - 1);
             }
             'D' => {
                 let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
                 self.cursor_col = self.cursor_col.saturating_sub(count);
             }
             'H' | 'f' => {
@@ -240,6 +244,10 @@ impl ScreenBuffer {
             }
             _ => {}
         }
+    }
+
+    fn normalize_pending_wrap(&mut self) {
+        self.cursor_col = self.cursor_col.min(self.cols - 1);
     }
 
     fn csi_single_param(&self, default: usize) -> usize {
@@ -340,6 +348,14 @@ mod tests {
 
         screen.push_bytes(b"\x1b[1A\x1b[4Dq");
         assert_eq!(screen.lines()[1], "    q");
+    }
+
+    #[test]
+    fn vertical_cursor_movement_cancels_pending_autowrap() {
+        let mut screen = ScreenBuffer::new(4, 2);
+        screen.push_bytes(b"abcd\x1b[1AX");
+
+        assert_eq!(screen.lines(), vec!["abcX", ""]);
     }
 
     #[test]
