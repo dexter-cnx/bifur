@@ -30,6 +30,7 @@ pub struct ScreenBuffer {
     pub cells: Vec<Cell>,
     cursor_col: usize,
     cursor_row: usize,
+    saved_cursor: Option<(usize, usize)>,
     ansi_state: AnsiState,
     csi_params: String,
     application_cursor_keys: bool,
@@ -54,6 +55,7 @@ impl ScreenBuffer {
             cells: vec![Cell::default(); cols * rows],
             cursor_col: 0,
             cursor_row: 0,
+            saved_cursor: None,
             ansi_state: AnsiState::Ground,
             csi_params: String::new(),
             application_cursor_keys: false,
@@ -93,6 +95,15 @@ impl ScreenBuffer {
         } else {
             (target_row_start + self.cursor_row).min(replacement.rows - 1)
         };
+        replacement.saved_cursor = self.saved_cursor.map(|(row, col)| {
+            let row = if replacement.rows < self.rows {
+                row.saturating_sub(source_row_start)
+                    .min(replacement.rows - 1)
+            } else {
+                (target_row_start + row).min(replacement.rows - 1)
+            };
+            (row, col.min(replacement.cols - 1))
+        });
         replacement.ansi_state = self.ansi_state;
         replacement.csi_params = std::mem::take(&mut self.csi_params);
         replacement.application_cursor_keys = self.application_cursor_keys;
@@ -105,9 +116,9 @@ impl ScreenBuffer {
     }
 
     /// Initial parser: handles normal text/control characters and a small VT100
-    /// cursor/erase subset while keeping raw escape bytes out of the visible
-    /// surface. A complete VT parser can replace this without changing the
-    /// public `ScreenBuffer` contract.
+    /// cursor/erase/save-restore subset while keeping raw escape bytes out of
+    /// the visible surface. A complete VT parser can replace this without
+    /// changing the public `ScreenBuffer` contract.
     ///
     /// PTY reads may split a multibyte UTF-8 code point. `utf8_pending` retains
     /// an incomplete trailing sequence until the next read instead of replacing
@@ -185,12 +196,17 @@ impl ScreenBuffer {
                 _ => {}
             },
             AnsiState::Escape => {
-                if ch == '[' {
-                    self.csi_params.clear();
-                    self.ansi_state = AnsiState::Csi;
-                } else {
-                    self.ansi_state = AnsiState::Ground;
+                match ch {
+                    '[' => {
+                        self.csi_params.clear();
+                        self.ansi_state = AnsiState::Csi;
+                        return;
+                    }
+                    '7' => self.save_cursor(),
+                    '8' => self.restore_cursor(),
+                    _ => {}
                 }
+                self.ansi_state = AnsiState::Ground;
             }
             AnsiState::Csi => {
                 if ('@'..='~').contains(&ch) {
@@ -250,12 +266,25 @@ impl ScreenBuffer {
                 self.normalize_pending_wrap();
                 self.erase_line(self.csi_erase_mode());
             }
+            's' if self.csi_params.is_empty() => self.save_cursor(),
+            'u' if self.csi_params.is_empty() => self.restore_cursor(),
             _ => {}
         }
     }
 
     fn normalize_pending_wrap(&mut self) {
         self.cursor_col = self.cursor_col.min(self.cols - 1);
+    }
+
+    fn save_cursor(&mut self) {
+        self.saved_cursor = Some((self.cursor_row, self.cursor_col.min(self.cols - 1)));
+    }
+
+    fn restore_cursor(&mut self) {
+        if let Some((row, col)) = self.saved_cursor {
+            self.cursor_row = row.min(self.rows - 1);
+            self.cursor_col = col.min(self.cols - 1);
+        }
     }
 
     fn csi_single_param(&self, default: usize) -> usize {
@@ -404,6 +433,50 @@ mod tests {
         assert_eq!(screen.lines()[0], " Y");
         assert_eq!(screen.lines()[1], "   X");
         assert_eq!(screen.lines()[2], "       Z");
+    }
+
+    #[test]
+    fn saves_and_restores_cursor_with_csi_sequences() {
+        let mut screen = ScreenBuffer::new(8, 3);
+        screen.push_bytes(b"\x1b[2;3H\x1b[s\x1b[1;1HX\x1b[uY");
+
+        assert_eq!(screen.lines(), vec!["X", "  Y", ""]);
+    }
+
+    #[test]
+    fn saves_and_restores_cursor_with_legacy_escape_sequences() {
+        let mut screen = ScreenBuffer::new(8, 3);
+        screen.push_bytes(b"\x1b[3;5H\x1b7\x1b[1;1HX\x1b8Y");
+
+        assert_eq!(screen.lines(), vec!["X", "", "    Y"]);
+    }
+
+    #[test]
+    fn restoring_without_a_saved_cursor_is_a_noop() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"abc\x1b[uX\x1b8Y");
+
+        assert_eq!(screen.lines()[0], "abcXY");
+    }
+
+    #[test]
+    fn saved_cursor_tracks_resize_and_stays_in_bounds() {
+        let mut screen = ScreenBuffer::new(8, 4);
+        screen.push_bytes(b"\x1b[4;8H\x1b[s");
+        screen.resize(4, 2);
+        screen.push_bytes(b"\x1b[uZ");
+
+        assert_eq!(screen.lines(), vec!["", "   Z"]);
+    }
+
+    #[test]
+    fn save_cursor_preserves_pending_autowrap() {
+        let mut screen = ScreenBuffer::new(4, 2);
+        screen.push_bytes(b"abcd\x1b[sX");
+        assert_eq!(screen.lines(), vec!["abcd", "X"]);
+
+        screen.push_bytes(b"\x1b[uY");
+        assert_eq!(screen.lines(), vec!["abcY", "X"]);
     }
 
     #[test]
