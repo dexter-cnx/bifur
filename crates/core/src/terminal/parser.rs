@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(screen.lines()[2], "       Z");
 
         screen.push_bytes(b"\x1b[1A\x1b[4Dq");
-        assert_eq!(screen.lines()[1], "    q");
+        assert_eq!(screen.lines()[1], "   q");
     }
 
     #[test]
