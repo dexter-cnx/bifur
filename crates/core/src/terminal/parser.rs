@@ -10,7 +10,7 @@ const ANSI_BRIGHT_COLORS: [u32; 8] = [
 ];
 const COLOR_CUBE_LEVELS: [u32; 6] = [0, 95, 135, 175, 215, 255];
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cell {
     pub ch: char,
     pub fg: u32,
@@ -110,7 +110,7 @@ impl ScreenBuffer {
             let target_row = target_row_start + row_offset;
             for col in 0..copy_cols {
                 replacement.cells[target_row * replacement.cols + col] =
-                    self.cells[source_row * self.cols + col].clone();
+                    self.cells[source_row * self.cols + col];
             }
         }
 
@@ -276,6 +276,11 @@ impl ScreenBuffer {
         }
 
         match command {
+            '@' if self.csi_has_numeric_param_only() => {
+                let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
+                self.insert_chars(count);
+            }
             'A' => {
                 let count = self.csi_single_param(1);
                 self.normalize_pending_wrap();
@@ -327,6 +332,16 @@ impl ScreenBuffer {
             'K' => {
                 self.normalize_pending_wrap();
                 self.erase_line(self.csi_erase_mode());
+            }
+            'P' if self.csi_has_numeric_param_only() => {
+                let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
+                self.delete_chars(count);
+            }
+            'X' if self.csi_has_numeric_param_only() => {
+                let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
+                self.erase_chars(count);
             }
             'd' => {
                 let row = self.csi_single_param(1).saturating_sub(1);
@@ -504,6 +519,10 @@ impl ScreenBuffer {
         (u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue)
     }
 
+    fn csi_has_numeric_param_only(&self) -> bool {
+        self.csi_params.is_empty() || self.csi_params.bytes().all(|byte| byte.is_ascii_digit())
+    }
+
     fn csi_single_param(&self, default: usize) -> usize {
         if self.csi_params.is_empty() {
             return default;
@@ -536,6 +555,52 @@ impl ScreenBuffer {
         Cell {
             bg: self.current_bg,
             ..Cell::default()
+        }
+    }
+
+    fn insert_chars(&mut self, count: usize) {
+        let row_start = self.cursor_row * self.cols;
+        let cursor = row_start + self.cursor_col;
+        let row_end = row_start + self.cols;
+        let available = row_end - cursor;
+        let count = count.min(available);
+        if count == 0 {
+            return;
+        }
+
+        if count < available {
+            self.cells
+                .copy_within(cursor..row_end - count, cursor + count);
+        }
+        let erased = self.erase_cell();
+        self.cells[cursor..cursor + count].fill(erased);
+    }
+
+    fn delete_chars(&mut self, count: usize) {
+        let row_start = self.cursor_row * self.cols;
+        let cursor = row_start + self.cursor_col;
+        let row_end = row_start + self.cols;
+        let available = row_end - cursor;
+        let count = count.min(available);
+        if count == 0 {
+            return;
+        }
+
+        if count < available {
+            self.cells.copy_within(cursor + count..row_end, cursor);
+        }
+        let erased = self.erase_cell();
+        self.cells[row_end - count..row_end].fill(erased);
+    }
+
+    fn erase_chars(&mut self, count: usize) {
+        let row_start = self.cursor_row * self.cols;
+        let cursor = row_start + self.cursor_col;
+        let row_end = row_start + self.cols;
+        let count = count.min(row_end - cursor);
+        if count > 0 {
+            let erased = self.erase_cell();
+            self.cells[cursor..cursor + count].fill(erased);
         }
     }
 
@@ -589,7 +654,7 @@ impl ScreenBuffer {
     fn scroll_up(&mut self) {
         for row in 1..self.rows {
             for col in 0..self.cols {
-                self.cells[(row - 1) * self.cols + col] = self.cells[row * self.cols + col].clone();
+                self.cells[(row - 1) * self.cols + col] = self.cells[row * self.cols + col];
             }
         }
         let start = (self.rows - 1) * self.cols;
@@ -839,6 +904,57 @@ mod tests {
         movement.extend_from_slice(b"EX");
         screen.push_bytes(&movement);
         assert_eq!(screen.lines()[2], "X  Z");
+    }
+
+    #[test]
+    fn character_editing_inserts_deletes_and_erases_cells() {
+        let mut screen = ScreenBuffer::new(8, 2);
+        screen.push_bytes(b"abcdef\x1b[1;3H\x1b[2@");
+        assert_eq!(screen.lines()[0], "ab  cdef");
+
+        screen.push_bytes(b"\x1b[1;4H\x1b[2P");
+        assert_eq!(screen.lines()[0], "ab def");
+
+        screen.push_bytes(b"\x1b[1;3H\x1b[2X");
+        assert_eq!(screen.lines()[0], "ab  ef");
+    }
+
+    #[test]
+    fn character_editing_uses_active_background_for_blank_cells() {
+        let mut screen = ScreenBuffer::new(6, 1);
+        screen.push_bytes(b"abcdef\x1b[44m\x1b[1;3H\x1b[@");
+        assert_eq!(screen.cells[2].ch, ' ');
+        assert_eq!(screen.cells[2].bg, ANSI_COLORS[4]);
+
+        screen.push_bytes(b"\x1b[1;5H\x1b[P");
+        assert_eq!(screen.cells[5].ch, ' ');
+        assert_eq!(screen.cells[5].bg, ANSI_COLORS[4]);
+
+        screen.push_bytes(b"\x1b[1;2H\x1b[2X");
+        assert!(screen.cells[1..3]
+            .iter()
+            .all(|cell| cell.ch == ' ' && cell.bg == ANSI_COLORS[4]));
+    }
+
+    #[test]
+    fn character_editing_defaults_clamps_and_cancels_pending_autowrap() {
+        let mut screen = ScreenBuffer::new(4, 2);
+        screen.push_bytes(b"abcd\x1b[@X");
+        assert_eq!(screen.lines(), vec!["abcX", ""]);
+
+        screen.push_bytes(b"\x1b[1;2H\x1b[99P");
+        assert_eq!(screen.lines()[0], "a");
+
+        screen.push_bytes(b"\x1b[1;1Hzzzz\x1b[0X");
+        assert_eq!(screen.lines()[0], "zzz");
+    }
+
+    #[test]
+    fn csi_intermediate_does_not_trigger_character_editing() {
+        let mut screen = ScreenBuffer::new(6, 1);
+        screen.push_bytes(b"abcdef\x1b[1;3H\x1b[2 @");
+
+        assert_eq!(screen.lines()[0], "abcdef");
     }
 
     #[test]
