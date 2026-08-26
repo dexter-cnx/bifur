@@ -520,11 +520,7 @@ impl ScreenBuffer {
     }
 
     fn csi_has_numeric_param_only(&self) -> bool {
-        self.csi_params.is_empty()
-            || self
-                .csi_params
-                .bytes()
-                .all(|byte| byte.is_ascii_digit())
+        self.csi_params.is_empty() || self.csi_params.bytes().all(|byte| byte.is_ascii_digit())
     }
 
     fn csi_single_param(&self, default: usize) -> usize {
