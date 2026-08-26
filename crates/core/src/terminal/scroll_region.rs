@@ -13,6 +13,31 @@ impl ScrollRegion {
         }
     }
 
+    pub(super) fn from_csi_params(rows: usize, params: &str) -> Option<Self> {
+        if params
+            .bytes()
+            .any(|byte| !byte.is_ascii_digit() && byte != b';')
+        {
+            return None;
+        }
+
+        let mut parts = params.split(';');
+        let top = Self::parse_csi_bound(parts.next())?;
+        let bottom = Self::parse_csi_bound(parts.next())?;
+        if parts.next().is_some() {
+            return None;
+        }
+
+        Self::from_vt_bounds(rows, top, bottom)
+    }
+
+    fn parse_csi_bound(value: Option<&str>) -> Option<Option<usize>> {
+        match value {
+            None | Some("") => Some(None),
+            Some(value) => value.parse::<usize>().ok().map(Some),
+        }
+    }
+
     pub(super) fn from_vt_bounds(
         rows: usize,
         top_param: Option<usize>,
@@ -76,6 +101,35 @@ mod tests {
 
         let defaults = ScrollRegion::from_vt_bounds(6, Some(0), Some(0)).unwrap();
         assert_eq!(defaults, ScrollRegion::full(6));
+    }
+
+    #[test]
+    fn csi_params_parse_decstbm_bounds_and_defaults() {
+        assert_eq!(
+            ScrollRegion::from_csi_params(6, "2;5"),
+            ScrollRegion::from_vt_bounds(6, Some(2), Some(5))
+        );
+        assert_eq!(
+            ScrollRegion::from_csi_params(6, ""),
+            Some(ScrollRegion::full(6))
+        );
+        assert_eq!(
+            ScrollRegion::from_csi_params(6, ";"),
+            Some(ScrollRegion::full(6))
+        );
+        assert_eq!(
+            ScrollRegion::from_csi_params(6, "0;0"),
+            Some(ScrollRegion::full(6))
+        );
+    }
+
+    #[test]
+    fn csi_params_reject_invalid_or_ambiguous_payloads() {
+        assert!(ScrollRegion::from_csi_params(6, "4;4").is_none());
+        assert!(ScrollRegion::from_csi_params(6, "1;7").is_none());
+        assert!(ScrollRegion::from_csi_params(6, "1;2;3").is_none());
+        assert!(ScrollRegion::from_csi_params(6, "2 r").is_none());
+        assert!(ScrollRegion::from_csi_params(6, "999999999999999999999999999999").is_none());
     }
 
     #[test]
