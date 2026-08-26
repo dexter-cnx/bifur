@@ -6,6 +6,7 @@ pub mod file_aware;
 pub mod history;
 pub mod input;
 pub mod parser;
+mod scroll_region;
 pub mod session;
 pub mod viewport;
 
