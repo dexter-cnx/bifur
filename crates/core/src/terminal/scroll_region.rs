@@ -14,7 +14,10 @@ impl ScrollRegion {
     }
 
     pub(super) fn from_csi_params(rows: usize, params: &str) -> Option<Self> {
-        if params.bytes().any(|byte| !byte.is_ascii_digit() && byte != b';') {
+        if params
+            .bytes()
+            .any(|byte| !byte.is_ascii_digit() && byte != b';')
+        {
             return None;
         }
 
@@ -106,8 +109,14 @@ mod tests {
             ScrollRegion::from_csi_params(6, "2;5"),
             ScrollRegion::from_vt_bounds(6, Some(2), Some(5))
         );
-        assert_eq!(ScrollRegion::from_csi_params(6, ""), Some(ScrollRegion::full(6)));
-        assert_eq!(ScrollRegion::from_csi_params(6, ";"), Some(ScrollRegion::full(6)));
+        assert_eq!(
+            ScrollRegion::from_csi_params(6, ""),
+            Some(ScrollRegion::full(6))
+        );
+        assert_eq!(
+            ScrollRegion::from_csi_params(6, ";"),
+            Some(ScrollRegion::full(6))
+        );
         assert_eq!(
             ScrollRegion::from_csi_params(6, "0;0"),
             Some(ScrollRegion::full(6))
