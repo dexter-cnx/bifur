@@ -8,6 +8,7 @@ pub mod input;
 pub mod parser;
 mod scroll_region;
 mod scroll_region_ops;
+mod scroll_state;
 pub mod session;
 pub mod viewport;
 
