@@ -144,18 +144,8 @@ mod tests {
         assert!(state.set_from_csi(5, "2;4"));
         let mut cells = cells(&["aaaa", "bbbb", "cccc", "dddd", "eeee"]);
 
-        assert!(!state.scroll_up_on_bottom_margin(
-            &mut cells,
-            4,
-            2,
-            Cell::default()
-        ));
-        assert!(state.scroll_up_on_bottom_margin(
-            &mut cells,
-            4,
-            3,
-            Cell::default()
-        ));
+        assert!(!state.scroll_up_on_bottom_margin(&mut cells, 4, 2, Cell::default()));
+        assert!(state.scroll_up_on_bottom_margin(&mut cells, 4, 3, Cell::default()));
         assert_eq!(
             text(&cells, 4),
             vec!["aaaa", "cccc", "dddd", "    ", "eeee"]
