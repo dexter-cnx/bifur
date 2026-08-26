@@ -110,7 +110,7 @@ impl ScreenBuffer {
             let target_row = target_row_start + row_offset;
             for col in 0..copy_cols {
                 replacement.cells[target_row * replacement.cols + col] =
-                    self.cells[source_row * self.cols + col].clone();
+                    self.cells[source_row * self.cols + col];
             }
         }
 
@@ -276,7 +276,7 @@ impl ScreenBuffer {
         }
 
         match command {
-            '@' => {
+            '@' if self.csi_has_numeric_param_only() => {
                 let count = self.csi_single_param(1);
                 self.normalize_pending_wrap();
                 self.insert_chars(count);
@@ -333,12 +333,12 @@ impl ScreenBuffer {
                 self.normalize_pending_wrap();
                 self.erase_line(self.csi_erase_mode());
             }
-            'P' => {
+            'P' if self.csi_has_numeric_param_only() => {
                 let count = self.csi_single_param(1);
                 self.normalize_pending_wrap();
                 self.delete_chars(count);
             }
-            'X' => {
+            'X' if self.csi_has_numeric_param_only() => {
                 let count = self.csi_single_param(1);
                 self.normalize_pending_wrap();
                 self.erase_chars(count);
@@ -519,6 +519,14 @@ impl ScreenBuffer {
         (u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue)
     }
 
+    fn csi_has_numeric_param_only(&self) -> bool {
+        self.csi_params.is_empty()
+            || self
+                .csi_params
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+    }
+
     fn csi_single_param(&self, default: usize) -> usize {
         if self.csi_params.is_empty() {
             return default;
@@ -565,9 +573,11 @@ impl ScreenBuffer {
         }
 
         if count < available {
-            self.cells.copy_within(cursor..row_end - count, cursor + count);
+            self.cells
+                .copy_within(cursor..row_end - count, cursor + count);
         }
-        self.cells[cursor..cursor + count].fill(self.erase_cell());
+        let erased = self.erase_cell();
+        self.cells[cursor..cursor + count].fill(erased);
     }
 
     fn delete_chars(&mut self, count: usize) {
@@ -583,7 +593,8 @@ impl ScreenBuffer {
         if count < available {
             self.cells.copy_within(cursor + count..row_end, cursor);
         }
-        self.cells[row_end - count..row_end].fill(self.erase_cell());
+        let erased = self.erase_cell();
+        self.cells[row_end - count..row_end].fill(erased);
     }
 
     fn erase_chars(&mut self, count: usize) {
@@ -592,7 +603,8 @@ impl ScreenBuffer {
         let row_end = row_start + self.cols;
         let count = count.min(row_end - cursor);
         if count > 0 {
-            self.cells[cursor..cursor + count].fill(self.erase_cell());
+            let erased = self.erase_cell();
+            self.cells[cursor..cursor + count].fill(erased);
         }
     }
 
@@ -646,7 +658,7 @@ impl ScreenBuffer {
     fn scroll_up(&mut self) {
         for row in 1..self.rows {
             for col in 0..self.cols {
-                self.cells[(row - 1) * self.cols + col] = self.cells[row * self.cols + col].clone();
+                self.cells[(row - 1) * self.cols + col] = self.cells[row * self.cols + col];
             }
         }
         let start = (self.rows - 1) * self.cols;
@@ -939,6 +951,14 @@ mod tests {
 
         screen.push_bytes(b"\x1b[1;1Hzzzz\x1b[0X");
         assert_eq!(screen.lines()[0], "zzz");
+    }
+
+    #[test]
+    fn csi_intermediate_does_not_trigger_character_editing() {
+        let mut screen = ScreenBuffer::new(6, 1);
+        screen.push_bytes(b"abcdef\x1b[1;3H\x1b[2 @");
+
+        assert_eq!(screen.lines()[0], "abcdef");
     }
 
     #[test]
