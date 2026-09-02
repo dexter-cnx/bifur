@@ -1,7 +1,7 @@
 use super::{
     parser::Cell,
     scroll_region::ScrollRegion,
-    scroll_region_ops::{delete_lines, insert_lines, scroll_up_one},
+    scroll_region_ops::{delete_lines, insert_lines, scroll_down, scroll_up, scroll_up_one},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +48,14 @@ impl ScrollState {
         erased: Cell,
     ) {
         delete_lines(cells, cols, self.region, row, count, erased);
+    }
+
+    pub(super) fn scroll_up(self, cells: &mut [Cell], cols: usize, count: usize, erased: Cell) {
+        scroll_up(cells, cols, self.region, count, erased);
+    }
+
+    pub(super) fn scroll_down(self, cells: &mut [Cell], cols: usize, count: usize, erased: Cell) {
+        scroll_down(cells, cols, self.region, count, erased);
     }
 
     pub(super) fn scroll_up_on_bottom_margin(
@@ -135,6 +143,26 @@ mod tests {
         assert_eq!(
             text(&cells, 4),
             vec!["aaaa", "bbbb", "cccc", "    ", "eeee"]
+        );
+    }
+
+    #[test]
+    fn scroll_commands_stay_inside_active_region() {
+        let mut state = ScrollState::new(6);
+        assert!(state.set_from_csi(6, "2;5"));
+
+        let mut up = cells(&["aaaa", "bbbb", "cccc", "dddd", "eeee", "ffff"]);
+        state.scroll_up(&mut up, 4, 2, Cell::default());
+        assert_eq!(
+            text(&up, 4),
+            vec!["aaaa", "dddd", "eeee", "    ", "    ", "ffff"]
+        );
+
+        let mut down = cells(&["aaaa", "bbbb", "cccc", "dddd", "eeee", "ffff"]);
+        state.scroll_down(&mut down, 4, 1, Cell::default());
+        assert_eq!(
+            text(&down, 4),
+            vec!["aaaa", "    ", "bbbb", "cccc", "dddd", "ffff"]
         );
     }
 
