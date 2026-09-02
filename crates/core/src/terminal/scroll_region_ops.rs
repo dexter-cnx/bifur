@@ -44,18 +44,57 @@ pub(super) fn delete_lines(
     cells[region_end - shift..region_end].fill(erased);
 }
 
-pub(super) fn scroll_up_one(cells: &mut [Cell], cols: usize, region: ScrollRegion, erased: Cell) {
+pub(super) fn scroll_up(
+    cells: &mut [Cell],
+    cols: usize,
+    region: ScrollRegion,
+    count: usize,
+    erased: Cell,
+) {
+    let rows = region.bottom() - region.top() + 1;
+    let count = count.min(rows);
+    if count == 0 {
+        return;
+    }
+
     let start = region.top() * cols;
     let end = (region.bottom() + 1) * cols;
-    if region.top() < region.bottom() {
-        cells.copy_within(start + cols..end, start);
+    let shift = count * cols;
+    if shift < end - start {
+        cells.copy_within(start + shift..end, start);
     }
-    cells[end - cols..end].fill(erased);
+    cells[end - shift..end].fill(erased);
+}
+
+pub(super) fn scroll_down(
+    cells: &mut [Cell],
+    cols: usize,
+    region: ScrollRegion,
+    count: usize,
+    erased: Cell,
+) {
+    let rows = region.bottom() - region.top() + 1;
+    let count = count.min(rows);
+    if count == 0 {
+        return;
+    }
+
+    let start = region.top() * cols;
+    let end = (region.bottom() + 1) * cols;
+    let shift = count * cols;
+    if shift < end - start {
+        cells.copy_within(start..end - shift, start + shift);
+    }
+    cells[start..start + shift].fill(erased);
+}
+
+pub(super) fn scroll_up_one(cells: &mut [Cell], cols: usize, region: ScrollRegion, erased: Cell) {
+    scroll_up(cells, cols, region, 1, erased);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{delete_lines, insert_lines, scroll_up_one};
+    use super::{delete_lines, insert_lines, scroll_down, scroll_up, scroll_up_one};
     use crate::terminal::{parser::Cell, scroll_region::ScrollRegion};
 
     fn cells(lines: &[&str]) -> Vec<Cell> {
@@ -112,6 +151,24 @@ mod tests {
         assert_eq!(
             text(&cells, 4),
             vec!["aaaa", "cccc", "dddd", "    ", "eeee"]
+        );
+    }
+
+    #[test]
+    fn scroll_commands_support_multiple_rows_and_clamp_to_region() {
+        let region = ScrollRegion::from_vt_bounds(6, Some(2), Some(5)).unwrap();
+        let mut up = cells(&["aaaa", "bbbb", "cccc", "dddd", "eeee", "ffff"]);
+        scroll_up(&mut up, 4, region, 2, Cell::default());
+        assert_eq!(
+            text(&up, 4),
+            vec!["aaaa", "dddd", "eeee", "    ", "    ", "ffff"]
+        );
+
+        let mut down = cells(&["aaaa", "bbbb", "cccc", "dddd", "eeee", "ffff"]);
+        scroll_down(&mut down, 4, region, 99, Cell::default());
+        assert_eq!(
+            text(&down, 4),
+            vec!["aaaa", "    ", "    ", "    ", "    ", "ffff"]
         );
     }
 
