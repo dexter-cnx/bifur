@@ -1,5 +1,7 @@
 use std::fmt::Write as _;
 
+use super::scroll_state::ScrollState;
+
 const DEFAULT_FG: u32 = 0xE0E0E0;
 const DEFAULT_BG: u32 = 0x121212;
 const ANSI_COLORS: [u32; 8] = [
@@ -58,6 +60,7 @@ pub struct ScreenBuffer {
     csi_params: String,
     application_cursor_keys: bool,
     utf8_pending: Vec<u8>,
+    scroll_state: ScrollState,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,6 +90,7 @@ impl ScreenBuffer {
             csi_params: String::new(),
             application_cursor_keys: false,
             utf8_pending: Vec::new(),
+            scroll_state: ScrollState::new(rows),
         }
     }
 
@@ -333,6 +337,30 @@ impl ScreenBuffer {
                 self.normalize_pending_wrap();
                 self.erase_line(self.csi_erase_mode());
             }
+            'L' if self.csi_has_numeric_param_only() => {
+                let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
+                let erased = self.erase_cell();
+                self.scroll_state.insert_lines(
+                    &mut self.cells,
+                    self.cols,
+                    self.cursor_row,
+                    count,
+                    erased,
+                );
+            }
+            'M' if self.csi_has_numeric_param_only() => {
+                let count = self.csi_single_param(1);
+                self.normalize_pending_wrap();
+                let erased = self.erase_cell();
+                self.scroll_state.delete_lines(
+                    &mut self.cells,
+                    self.cols,
+                    self.cursor_row,
+                    count,
+                    erased,
+                );
+            }
             'P' if self.csi_has_numeric_param_only() => {
                 let count = self.csi_single_param(1);
                 self.normalize_pending_wrap();
@@ -349,6 +377,12 @@ impl ScreenBuffer {
                 self.cursor_row = row.min(self.rows - 1);
             }
             'm' => self.apply_sgr(),
+            'r' => {
+                if self.scroll_state.set_from_csi(self.rows, &self.csi_params) {
+                    self.cursor_row = 0;
+                    self.cursor_col = 0;
+                }
+            }
             's' if self.csi_params.is_empty() => self.save_cursor(),
             'u' if self.csi_params.is_empty() => self.restore_cursor(),
             _ => {}
@@ -644,21 +678,18 @@ impl ScreenBuffer {
 
     fn newline(&mut self) {
         self.cursor_col = 0;
+        let erased = self.erase_cell();
+        if self.scroll_state.scroll_up_on_bottom_margin(
+            &mut self.cells,
+            self.cols,
+            self.cursor_row,
+            erased,
+        ) {
+            return;
+        }
         if self.cursor_row + 1 < self.rows {
             self.cursor_row += 1;
-        } else {
-            self.scroll_up();
         }
-    }
-
-    fn scroll_up(&mut self) {
-        for row in 1..self.rows {
-            for col in 0..self.cols {
-                self.cells[(row - 1) * self.cols + col] = self.cells[row * self.cols + col];
-            }
-        }
-        let start = (self.rows - 1) * self.cols;
-        self.cells[start..start + self.cols].fill(Cell::default());
     }
 }
 
@@ -1071,5 +1102,29 @@ mod tests {
         screen.resize(8, 4);
 
         assert_eq!(screen.lines(), vec!["", "", "one", "two"]);
+    }
+
+    #[test]
+    fn scroll_margins_scope_line_editing_and_newline() {
+        let mut screen = ScreenBuffer::new(4, 5);
+        screen.push_bytes(b"aaaa\nbbbb\ncccc\ndddd\neeee");
+        screen.push_bytes(b"\x1b[2;4r\x1b[3;1H\x1b[L");
+        assert_eq!(screen.lines(), vec!["aaaa", "bbbb", "", "cccc", "eeee"]);
+
+        screen.push_bytes(b"\x1b[3;1H\x1b[M");
+        assert_eq!(screen.lines(), vec!["aaaa", "bbbb", "cccc", "", "eeee"]);
+
+        screen.push_bytes(b"\x1b[2;1Hbbbb\x1b[3;1Hcccc\x1b[4;1Hdddd\n");
+        assert_eq!(screen.lines(), vec!["aaaa", "cccc", "dddd", "", "eeee"]);
+    }
+
+    #[test]
+    fn scroll_margin_reset_and_resize_restore_full_screen_scrolling() {
+        let mut screen = ScreenBuffer::new(4, 3);
+        screen.push_bytes(b"aaaa\nbbbb\ncccc\x1b[1;2r");
+        screen.resize(4, 3);
+        screen.push_bytes(b"\x1b[3;1H\nzzzz");
+
+        assert_eq!(screen.lines(), vec!["bbbb", "cccc", "zzzz"]);
     }
 }
